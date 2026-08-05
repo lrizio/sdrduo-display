@@ -2,6 +2,38 @@
 
 All notable changes to SDRduo Display are documented here.
 
+## v0.12 — standalone installer
+
+- `Install/`: new self-contained `setup.exe` for installing on another
+  computer -- a single file, nothing else needs to ship alongside it (the
+  app source is embedded in it as a base64-encoded zip). Built with
+  `ps2exe` (a genuine standalone .exe, not a script-with-a-wrapper) after
+  `iexpress` -- the built-in Windows self-extractor packager, the first
+  approach tried -- turned out to fail silently in this non-interactive
+  build environment, apparently needing a real interactive desktop
+  session it didn't have here. On run: checks for Python 3 (offers a
+  `winget` install if missing), copies the app to
+  `%LOCALAPPDATA%\SDRduoDisplay` by default (no admin rights needed),
+  creates a venv and installs dependencies, and adds Desktop/Start Menu
+  shortcuts. Does NOT bundle or install the SDRplay API driver -- that's
+  the vendor's own USB driver for the RSPduo, not something this
+  installer can legitimately redistribute; the final message points to
+  https://www.sdrplay.com/software/ instead. Hit two real bugs while
+  building it, both fixed: (1) ps2exe's compiled `Read-Host` throws
+  instead of returning an empty string when stdin isn't a real
+  interactive console, which crashed automated test runs -- wrapped every
+  prompt in a `Read-HostSafe` helper that falls back to the stated
+  default; (2) `$ErrorActionPreference = "Stop"` treated ANY stderr
+  output from external tools as a fatal error, including venv's harmless
+  "moved due to redirects or junctions" notice (common under
+  `%LOCALAPPDATA%`), aborting a fully-working install -- switched to
+  `"Continue"` with explicit `$LASTEXITCODE`/output-file checks after
+  each external command instead. Verified with a full end-to-end run on
+  a clean target directory: Python found, dependencies installed,
+  shortcuts created, exit code 0; rebuilt via `build.ps1` a second time
+  to confirm the generate-from-template pipeline reproduces byte-for-byte
+  (93,184 bytes both times).
+
 ## v0.11 — zero-IF DC-offset causing AM "Donald Duck" distortion exactly on-frequency
 
 - `backend/receiver.py`: root cause of AM audio garbling to "Donald Duck"

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SDRduo Display</title>
+<link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+<header id="topbar">
+  <div id="brand">SDRduo Display <span id="conn-dot" class="dot dot-off" title="connection"></span></div>
+
+  <div id="freq-block">
+    <input id="freq-input" type="text" inputmode="none" value="14.200.000" readonly />
+    <span id="freq-unit">Hz</span>
+  </div>
+
+  <div id="mode-buttons" class="btn-row"></div>
+
+  <div id="meter-block">
+    <div class="meter-label">SIGNAL</div>
+    <div id="smeter"><div id="smeter-fill"></div></div>
+    <div id="smeter-val">S0</div>
+    <div id="overload-badge" class="badge hidden">OVERLOAD</div>
+    <div id="sql-badge" class="badge badge-sql hidden">SQUELCHED</div>
+  </div>
+</header>
+
+<div class="dual-row">
+  <div id="band-row" class="btn-row"></div>
+  <div id="step-row" class="btn-row">
+    <span class="row-label">STEP</span>
+  </div>
+</div>
+
+<div class="dual-row">
+  <div id="span-row" class="btn-row">
+    <span class="row-label">SPAN</span>
+  </div>
+  <div id="mem-row" class="btn-row">
+    <span class="row-label">MEM</span>
+    <button id="mem-save-btn" title="Click, then click a memory slot to save the current frequency + mode into it">Save&hellip;</button>
+  </div>
+</div>
+
+<main>
+  <canvas id="spectrum" height="220"></canvas>
+  <canvas id="waterfall" height="260"></canvas>
+</main>
+
+<footer id="controls">
+  <label class="ctrl">
+    Gain reduction <span id="grdb-val">40</span> dB
+    <input id="grdb-slider" type="range" min="20" max="59" value="40" />
+  </label>
+  <label class="ctrl">
+    LNA state <span id="lna-val">4</span>
+    <input id="lna-slider" type="range" min="0" max="9" value="4" />
+  </label>
+  <label class="ctrl ctrl-toggle">
+    <input id="agc-toggle" type="checkbox" checked />
+    AGC
+  </label>
+  <label class="ctrl ctrl-toggle">
+    <input id="sql-toggle" type="checkbox" />
+    Squelch
+  </label>
+  <label class="ctrl">
+    SQL threshold <span id="sql-val">-90</span> dBFS
+    <input id="sql-slider" type="range" min="-120" max="-20" value="-90" />
+  </label>
+  <label class="ctrl">
+    Floor <span id="floor-val">-120</span> dB
+    <input id="floor-slider" type="range" min="-140" max="-40" value="-120" />
+  </label>
+  <label class="ctrl">
+    Ceiling <span id="ceil-val">-20</span> dB
+    <input id="ceil-slider" type="range" min="-80" max="0" value="-20" />
+  </label>
+  <label class="ctrl">
+    Volume <span id="vol-val">80%</span>
+    <input id="vol-slider" type="range" min="0" max="200" value="80" />
+  </label>
+  <button id="audio-btn">Enable Audio</button>
+</footer>
+
+<div id="keypad-overlay" class="hidden">
+  <div id="keypad">
+    <div id="keypad-unit-row">
+      <button id="keypad-unit-mhz" data-unit="MHz">MHz</button>
+      <button id="keypad-unit-khz" data-unit="kHz">kHz</button>
+    </div>
+    <div id="keypad-display">0</div>
+    <div id="keypad-mhz-preview">= 0.000000 MHz</div>
+    <div id="keypad-grid">
+      <button data-key="7">7</button>
+      <button data-key="8">8</button>
+      <button data-key="9">9</button>
+      <button data-key="4">4</button>
+      <button data-key="5">5</button>
+      <button data-key="6">6</button>
+      <button data-key="1">1</button>
+      <button data-key="2">2</button>
+      <button data-key="3">3</button>
+      <button id="keypad-clear" data-key="clear">C</button>
+      <button data-key="0">0</button>
+      <button data-key=".">.</button>
+    </div>
+    <div id="keypad-actions">
+      <button id="keypad-back" data-key="back">&#9003;</button>
+      <button id="keypad-cancel">Cancel</button>
+      <button id="keypad-ok">Enter</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

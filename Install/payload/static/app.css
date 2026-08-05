@@ -1,0 +1,509 @@
+:root {
+  --bg: #0b0f14;
+  --panel: #121821;
+  --border: #23303f;
+  --text: #d8e2ea;
+  --dim: #7c8ea0;
+  --accent: #35d0ba;
+  --amber: #e0a030;
+  --red: #e04b4b;
+  --green: #3ecf5e;
+
+  /* Skeuomorphic panel-chrome tokens: raised buttons and panels use
+     --raised-*, sunken displays (LCD/meter/canvas bezels) use --sunk-*.
+     Raised surfaces layer a glass "sheen" (fading white band across the
+     top half) over the base shade -- the classic glossy-button look --
+     rather than just a flat top-to-bottom gradient. */
+  --raised-grad:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.05) 40%, rgba(255, 255, 255, 0) 55%),
+    linear-gradient(180deg, #37495f 0%, #0d131c 100%);
+  --raised-grad-hover:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.07) 40%, rgba(255, 255, 255, 0) 55%),
+    linear-gradient(180deg, #435972 0%, #121a26 100%);
+  --raised-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    inset 0 -2px 1px rgba(0, 0, 0, 0.55),
+    0 2px 5px rgba(0, 0, 0, 0.65);
+  --raised-shadow-active:
+    inset 0 3px 6px rgba(0, 0, 0, 0.8),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+  --panel-grad: linear-gradient(180deg, #1d2738 0%, #090c10 100%);
+  --panel-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 3px 10px rgba(0, 0, 0, 0.65);
+  --sunk-shadow:
+    inset 0 3px 7px rgba(0, 0, 0, 0.9),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04),
+    0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", Consolas, monospace;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 10px 16px;
+  background: var(--panel-grad);
+  box-shadow: var(--panel-shadow);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  position: relative;
+  z-index: 1;
+}
+
+#brand {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.dot-off { background: var(--red); }
+.dot-on { background: var(--green); }
+
+#freq-block {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  background: #05080b;
+  box-shadow: var(--sunk-shadow);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+#freq-block:hover { border-color: var(--accent); }
+
+#freq-input {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-size: 26px;
+  font-weight: 700;
+  font-family: inherit;
+  width: 240px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  caret-color: transparent;
+}
+#freq-input:focus { outline: none; color: #fff; }
+
+#freq-unit { color: var(--dim); font-size: 13px; }
+
+.btn-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.btn-row button {
+  background: var(--raised-grad);
+  box-shadow: var(--raised-shadow);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.7);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-top-color: #46586f;
+  border-bottom-color: #060a0f;
+  border-radius: 5px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-row button:hover { background: var(--raised-grad-hover); border-color: var(--accent); }
+.btn-row button:active { background: var(--raised-grad); box-shadow: var(--raised-shadow-active); transform: translateY(1px); }
+.btn-row button.active {
+  background: linear-gradient(180deg, #5eeed8 0%, var(--accent) 55%, #1f9483 100%);
+  color: #04231d;
+  border-color: var(--accent);
+  font-weight: 700;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+    0 1px 3px rgba(0, 0, 0, 0.5),
+    0 0 8px rgba(53, 208, 186, 0.35);
+}
+
+.dual-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px 24px;
+  padding: 8px 16px;
+  background: var(--panel-grad);
+  box-shadow: var(--panel-shadow);
+  border-bottom: 1px solid var(--border);
+  position: relative;
+  z-index: 1;
+}
+.dual-row .btn-row {
+  padding: 0;
+  background: none;
+  border-bottom: none;
+  flex: 0 1 auto;
+}
+
+#mem-save-btn {
+  background: var(--raised-grad);
+  box-shadow: var(--raised-shadow);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.7);
+  color: var(--amber);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  margin-right: 6px;
+}
+#mem-save-btn:hover { background: var(--raised-grad-hover); border-color: var(--amber); }
+#mem-save-btn:active { box-shadow: var(--raised-shadow-active); transform: translateY(1px); }
+#mem-row.save-armed #mem-save-btn {
+  background: linear-gradient(180deg, #f6cf7a 0%, var(--amber) 55%, #a9711c 100%);
+  color: #241705;
+  border-color: var(--amber);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+    0 1px 3px rgba(0, 0, 0, 0.5),
+    0 0 8px rgba(224, 160, 48, 0.4);
+}
+#mem-row.save-armed .mem-slot {
+  border-color: var(--amber);
+  animation: mem-pulse 1s ease-in-out infinite;
+}
+@keyframes mem-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(224, 160, 48, 0.5); }
+  50% { box-shadow: 0 0 0 4px rgba(224, 160, 48, 0); }
+}
+.mem-slot.filled { color: var(--accent); border-color: #2a4a44; }
+
+.row-label {
+  font-size: 11px;
+  color: var(--dim);
+  letter-spacing: 0.5px;
+  margin-right: 4px;
+}
+
+#meter-block {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.meter-label { font-size: 11px; color: var(--dim); }
+#smeter {
+  width: 160px;
+  height: 12px;
+  background: #05080b;
+  box-shadow: var(--sunk-shadow);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+#smeter-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--green), var(--amber), var(--red));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 -2px 3px rgba(0, 0, 0, 0.3);
+}
+#smeter-val { font-size: 12px; color: var(--dim); width: 90px; }
+.badge {
+  background: var(--red);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.badge-sql { background: #445266; }
+.hidden { display: none; }
+
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  /* Recessed "screen" bezel around the canvases -- padding keeps this on
+     main's own uncovered surface, so it stays visible instead of sitting
+     behind the canvases' opaque pixel content. */
+  padding: 8px;
+  background: #05080b;
+  box-shadow:
+    inset 0 4px 10px rgba(0, 0, 0, 0.95),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04),
+    0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+#spectrum, #waterfall {
+  width: 100%;
+  display: block;
+}
+#spectrum {
+  height: 220px;
+  flex: 0 0 auto;
+  background: #05080b;
+  border-bottom: 1px solid var(--border);
+}
+#waterfall {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #000;
+}
+
+#controls {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 8px 16px;
+  background: var(--panel-grad);
+  box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+  position: relative;
+  z-index: 1;
+}
+
+.ctrl {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.ctrl-toggle { flex-direction: row; align-items: center; gap: 6px; }
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+/* Glossy 3D knob on a sunken groove, matching the raised-button chrome. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 130px;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: #05080b;
+  box-shadow: var(--sunk-shadow);
+  border: 1px solid var(--border);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #4de8d0 0%, var(--accent) 55%, #1c8a7a 100%);
+  border: 1px solid #0c2b26;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+input[type="range"]::-webkit-slider-thumb:active { box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5); }
+input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: #05080b;
+  box-shadow: var(--sunk-shadow);
+  border: 1px solid var(--border);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #4de8d0 0%, var(--accent) 55%, #1c8a7a 100%);
+  border: 1px solid #0c2b26;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+#audio-btn {
+  margin-left: auto;
+  background: var(--raised-grad);
+  box-shadow: var(--raised-shadow);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.7);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 16px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+#audio-btn:hover { background: var(--raised-grad-hover); border-color: var(--accent); }
+#audio-btn:active { box-shadow: var(--raised-shadow-active); transform: translateY(1px); }
+#audio-btn.active {
+  background: linear-gradient(180deg, #5eeed8 0%, var(--accent) 55%, #1f9483 100%);
+  color: #04231d;
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+    0 1px 3px rgba(0, 0, 0, 0.5),
+    0 0 8px rgba(53, 208, 186, 0.35);
+}
+
+#keypad-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 4, 6, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+#keypad-overlay.hidden {
+  display: none;
+}
+
+#keypad {
+  background: var(--panel-grad);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  width: 300px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+#keypad-unit-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+#keypad-unit-row button {
+  flex: 1;
+  background: var(--raised-grad);
+  box-shadow: var(--raised-shadow);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 0;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+#keypad-unit-row button:hover { background: var(--raised-grad-hover); border-color: var(--accent); }
+#keypad-unit-row button.active {
+  background: linear-gradient(180deg, #5eeed8 0%, var(--accent) 55%, #1f9483 100%);
+  color: #04231d;
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+    0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+#keypad-display {
+  background: #05080b;
+  box-shadow: var(--sunk-shadow);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-align: right;
+  padding: 10px 14px;
+  margin-bottom: 4px;
+  font-family: inherit;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+/* Live "this many digits = X.XXXXXX MHz" readout -- entering a station's
+   dial frequency here (e.g. "100898" meaning 100.898 MHz) without the full
+   9-digit Hz count silently tunes 1000x low into another band entirely,
+   with no error and no visual cue. This makes the actual result obvious
+   before committing. */
+#keypad-mhz-preview {
+  color: var(--dim);
+  font-size: 13px;
+  text-align: right;
+  margin-bottom: 12px;
+  padding: 0 14px;
+}
+
+#keypad-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+#keypad-grid button {
+  background: var(--raised-grad);
+  box-shadow: var(--raised-shadow);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.7);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 20px;
+  font-weight: 600;
+  padding: 16px 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+#keypad-grid button:hover { background: var(--raised-grad-hover); border-color: var(--accent); }
+#keypad-grid button:active {
+  background: var(--accent);
+  color: #05080b;
+  box-shadow: var(--raised-shadow-active);
+  transform: translateY(1px);
+}
+#keypad-clear { color: var(--amber); }
+
+#keypad-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+#keypad-actions button {
+  flex: 1;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  padding: 12px 0;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: var(--raised-shadow);
+}
+#keypad-actions button:active { box-shadow: var(--raised-shadow-active); transform: translateY(1px); }
+#keypad-back { background: var(--raised-grad); color: var(--amber); }
+#keypad-back:hover { background: var(--raised-grad-hover); border-color: var(--amber); }
+#keypad-cancel { background: var(--raised-grad); color: var(--text); }
+#keypad-cancel:hover { background: var(--raised-grad-hover); }
+#keypad-ok {
+  background: linear-gradient(180deg, #5eeed8 0%, var(--accent) 55%, #1f9483 100%);
+  color: #04231d;
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+    0 1px 3px rgba(0, 0, 0, 0.5);
+}

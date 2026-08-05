@@ -4,3 +4,8 @@ __pycache__/
 .run_pid.txt
 .server_stdout.log
 .server_stderr.log
+
+# Install/setup.exe is the shipped deliverable and IS committed -- these
+# two are regenerable intermediate build output from Install/build.ps1.
+Install/payload.zip
+Install/setup_standalone.ps1

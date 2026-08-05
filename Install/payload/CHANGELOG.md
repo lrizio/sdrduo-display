@@ -1,0 +1,378 @@
+# Changelog
+
+All notable changes to SDRduo Display are documented here.
+
+## v0.12 — standalone installer
+
+- `Install/`: new self-contained `setup.exe` for installing on another
+  computer -- a single file, nothing else needs to ship alongside it (the
+  app source is embedded in it as a base64-encoded zip). Built with
+  `ps2exe` (a genuine standalone .exe, not a script-with-a-wrapper) after
+  `iexpress` -- the built-in Windows self-extractor packager, the first
+  approach tried -- turned out to fail silently in this non-interactive
+  build environment, apparently needing a real interactive desktop
+  session it didn't have here. On run: checks for Python 3 (offers a
+  `winget` install if missing), copies the app to
+  `%LOCALAPPDATA%\SDRduoDisplay` by default (no admin rights needed),
+  creates a venv and installs dependencies, and adds Desktop/Start Menu
+  shortcuts. Does NOT bundle or install the SDRplay API driver -- that's
+  the vendor's own USB driver for the RSPduo, not something this
+  installer can legitimately redistribute; the final message points to
+  https://www.sdrplay.com/software/ instead. Hit two real bugs while
+  building it, both fixed: (1) ps2exe's compiled `Read-Host` throws
+  instead of returning an empty string when stdin isn't a real
+  interactive console, which crashed automated test runs -- wrapped every
+  prompt in a `Read-HostSafe` helper that falls back to the stated
+  default; (2) `$ErrorActionPreference = "Stop"` treated ANY stderr
+  output from external tools as a fatal error, including venv's harmless
+  "moved due to redirects or junctions" notice (common under
+  `%LOCALAPPDATA%`), aborting a fully-working install -- switched to
+  `"Continue"` with explicit `$LASTEXITCODE`/output-file checks after
+  each external command instead. Verified with a full end-to-end run on
+  a clean target directory: Python found, dependencies installed,
+  shortcuts created, exit code 0; rebuilt via `build.ps1` a second time
+  to confirm the generate-from-template pipeline reproduces byte-for-byte
+  (93,184 bytes both times).
+
+## v0.11 — zero-IF DC-offset causing AM "Donald Duck" distortion exactly on-frequency
+
+- `backend/receiver.py`: root cause of AM audio garbling to "Donald Duck"
+  distortion, always exactly on-frequency, clearing up when manually
+  detuned a few kHz off-carrier -- this is a zero-IF receiver tuned by
+  moving the hardware LO to exactly the requested frequency, so the wanted
+  signal and the hardware's own DC-offset/LO-leakage artifact (which sits
+  at 0 Hz regardless of tuning) always land on the same spot. An AM
+  carrier is itself indistinguishable from "DC" in complex baseband, so no
+  downstream filter could separate the two once they'd already collided.
+  Fixed by never tuning the hardware LO to the frequency of interest: it's
+  now offset +150kHz from every request, and every batch of samples is
+  digitally shifted back down by the same amount before it reaches the
+  ring buffer -- implemented as a phase-continuous NCO (150kHz/2Msps
+  reduces to an exact 3/40 sample-count period, so the correction has zero
+  floating-point phase drift over any run length; verified numerically
+  with a two-chunk phase-continuity test). `receiver.frequency_hz` (what
+  every other module reads) stays the *requested* value throughout, so
+  this is fully transparent to `dsp.py`/`server.py`/the frontend -- none
+  needed to change. Verified against the live receiver: 774kHz AM
+  (previously distorted exactly on-frequency) now clean.
+
+## v0.10 — unit-aware frequency entry, span/step persistence
+
+- `static/index.html`, `static/app.css`, `static/app.js`: root cause of a
+  recurring, session-derailing mistuning bug -- the keypad took raw Hz
+  digits with no unit indication, so typing a station's dial frequency
+  (e.g. "108898" meaning 108.898 MHz) without the full 9-digit Hz count
+  silently tuned 1000x low into another band entirely, with no error and
+  no visual cue (confirmed happening twice: 108898 -> 108.898kHz, and
+  separately 109932/120011 during a click-to-tune investigation). Keypad
+  now defaults to MHz entry with an explicit MHz/kHz toggle and a
+  decimal-point key, plus a live "= X.XXXXXX MHz" preview line so the
+  actual result is obvious before committing (verified: typing "108898"
+  now visibly shows "= 0.108898 MHz" instead of tuning there silently).
+- `static/app.js`: span and step selection used to silently reset to
+  their 2M/1k defaults on every page reload (only memory presets were
+  persisted) -- with no visual cue that a prior span selection hadn't
+  survived a refresh, a click near a peak could jump far more than
+  expected (reported: "10kHz click jumps 10MHz", traced to span having
+  silently reverted to 2M). Both now persist to `localStorage`, same
+  mechanism as memory presets.
+
+## v0.9 — audio delivery robustness (broadcaster blocking, stale scheduled audio on retune)
+
+- `backend/server.py`: `frame_broadcaster()`/`state_broadcaster()` sent to
+  each connected client sequentially with an un-timeout-bounded
+  `await ws.send_bytes()`/`send_text()` -- a single stale/half-dead
+  connection (accumulated from repeated testing) could stall the shared
+  frame queue indefinitely, starving every other client, including the
+  real listening session. Now sends to all clients concurrently via
+  `asyncio.gather`, each with a 1s timeout; a client that doesn't respond
+  in time is dropped instead of blocking the rest.
+- `static/app.js`: retuning didn't flush already-scheduled Web Audio
+  buffers the way the mute button already did -- audio already queued
+  from the *old* frequency (up to 300ms ahead) kept playing out on its own
+  timeline while the new frequency's audio got scheduled on top of it, so
+  both were briefly audible together. `send()` now flushes scheduled
+  sources (`stopAllScheduled()`) and resets the playback clock whenever a
+  `set_freq` command goes out, for every tuning path (click, scroll,
+  keypad, memory recall) since they all funnel through it.
+- `backend/receiver.py`: `set_gain()`'s existing rollback-on-rejection
+  only restored the *software's* record of the gain state, not the
+  device's actual internal state -- a rejected `Update(Gr)` call could
+  leave hardware and software silently out of sync, making every
+  subsequent gain command fail too, for a reason no longer visible in
+  `self.grdb`/`self.lna_state` (confirmed in logs: LNA states 7/8/9/8/7
+  rejected back-to-back). Rollback now re-pushes the restored values to
+  the device too, best-effort.
+
+## v0.8 — WFM (broadcast FM) mode, streaming filter state
+
+- `backend/dsp.py`: new **WFM** mode alongside FM. Ham NFM (+-5kHz
+  deviation, ~16kHz channel) and broadcast FM (+-75kHz deviation, ~180kHz
+  channel) are different signals needing different sample-rate chains --
+  FM's own first-stage filter only preserves +-45kHz, and its
+  post-discriminator audio filter assumes a +-5kHz reference, so running a
+  broadcast signal through it clipped/distorted badly. WFM gets its own
+  parallel chain: gentler first-stage decimation (x4 not x20) to preserve
+  the full Carson bandwidth, a +-75kHz deviation reference, and a steep
+  Kaiser-window audio filter (~60dB down by 19kHz, up from a 63-tap filter
+  that only managed ~12dB) to reject the 19kHz stereo pilot and 38kHz L-R
+  subcarrier before they could alias into the audible 9.5-23kHz range as a
+  garbled "second signal" under the real program audio. Verified against
+  synthetic 100%/20% modulation-depth test tones (99.6%/20.0% of full
+  scale, exactly proportional) and against the live receiver.
+- `backend/dsp.py`: FM's own channel selectivity and audio-bandwidth fixes
+  -- a dedicated +-8kHz pre-discriminator filter (previously the
+  discriminator ran on the full +-45kHz shared anti-alias filter with no
+  channel selectivity at all, so adjacent-channel noise/carriers got
+  demodulated right along with the wanted signal) and a dedicated ~3kHz
+  post-discriminator audio filter (previously shared the generic 5.5kHz
+  AM/SSB filter, letting the loudest part of an FM discriminator's noise
+  triangle straight through). Plus a DC-blocker on the discriminator
+  output for residual tuning-offset bias, matching the existing AM design.
+- `backend/dsp.py`: every FIR filter's delay-line state (and the FM/WFM
+  discriminator's cross-chunk sample) is now threaded across `process()`
+  calls instead of reset to zero each call. The reset produced a real
+  transient at the start of every ~40ms chunk that the discriminator
+  turned into an audible click, on a steady chunk-rate rhythm -- a
+  "machine gun" sound, worse than the "faint clicks... acceptable for v1"
+  the original decimation design had anticipated, and it got substantially
+  louder once WFM's extra cascaded filter stages were added. Verified via
+  an automated multi-chunk test across all six modes plus continuous live
+  testing (8+ seconds, WFM against a real broadcast signal, no artifacts).
+
+## v0.7 — display/UI polish
+
+- `static/app.css`: keypad-not-closing recurred with a *different* root
+  cause than v0.6's stale-cache fix -- `#keypad-overlay { display: flex }`
+  (an ID selector) always beat `.hidden { display: none }` (a class
+  selector) regardless of source order, so `closeKeypad()`'s
+  `classList.add("hidden")` was applying correctly but never actually
+  hiding anything. Fixed with a `#keypad-overlay.hidden` rule specific
+  enough to win.
+- `static/index.html`, `static/app.css`: band/span/step/mem collapsed from
+  four stacked rows to two (band+step, span+mem, each split left/right via
+  a new `.dual-row` wrapper) to give the spectrum/waterfall more vertical
+  space.
+- `static/app.js`: waterfall rows render at native FFT-bin width then get
+  stretched to the full canvas width -- default canvas image smoothing was
+  bilinear-blurring that stretch, burying narrow/weak signals into the
+  noise floor. `imageSmoothingEnabled = false` (reapplied after every
+  resize, since resizing a canvas's width/height attribute silently resets
+  its 2D context state). Spectrum trace line width was scaling with the
+  canvas's *physical* pixel width (`w/800`), rendering 1.5-2.5px+ thick and
+  anti-aliased on any display wider than 800px physical pixels, worse on
+  the 150%-scaled laptop display -- fixed to a flat 1 device pixel.
+- `static/app.js`: S-meter now shows ham-convention S-units (S0-S9,
+  S9+NNdB, clamped at S9+60dB) instead of raw dBFS, with the raw value
+  kept as a hover tooltip. Uncalibrated (S9 anchored at a placeholder
+  -73dBFS, mirroring the classic S9=-73dBm convention) since this SDR's
+  dBFS has no fixed relationship to true RF level -- it shifts with gain
+  reduction/LNA state.
+- `static/app.js`: volume slider max raised 100 -> 200 (unity gain still
+  at 100, so existing settings are unaffected) -- the Web Audio gain node
+  already supported gain > 1.0, the UI just didn't expose it.
+- `static/app.css`: skeuomorphic panel-chrome pass across buttons, panels,
+  sliders, and the frequency/keypad displays -- raised glossy gradients
+  with a top-highlight/bottom-shade/drop-shadow on buttons (pressed-in on
+  click, glowing "lit" gradient when active/selected), sunken-groove
+  treatment on recessed elements (frequency readout, S-meter track,
+  keypad display), and a recessed bezel around the spectrum/waterfall via
+  the `main` container's own padding (deliberately not touching the
+  canvases themselves, to leave the crispness fix above untouched).
+
+## v0.6 — fix keypad not closing, memory/preset slots
+
+- `backend/server.py`: root cause of "keypad doesn't close on Enter or on
+  clicking elsewhere" -- the browser had been silently reusing a stale
+  cached copy of `app.css` (no request logged at all, not even a
+  conditional check), predating the keypad CSS entirely. Without that
+  CSS, the overlay never became a real fullscreen modal, so outside
+  clicks landed on ordinary page elements instead of the overlay's own
+  backdrop. Added a `no-store` `Cache-Control` middleware on `/` and
+  `/static/*` so this can't recur -- confirmed via `document.styleSheets`
+  rule counts before/after (stuck at 36 rules/missing the keypad block
+  before the fix, 55 rules/present after).
+- `static/app.js`: also hardened the Enter-key path independently of the
+  cache bug -- a clicked keypad `<button>` keeps keyboard focus
+  afterward, and a native browser behavior re-activates (re-clicks) a
+  focused button on Enter. Now every keypad button is explicitly
+  `.blur()`-ed right after its click handler runs, so Enter always goes
+  through our own commit handler only. Verified: `document.activeElement`
+  is confirmed no longer the clicked button afterward.
+- `static/index.html`, `static/app.css`, `static/app.js`: new memory/
+  preset row (M1-M8) below STEP. Click "Save..." then a slot to store the
+  current frequency + mode into it; right-click a slot to overwrite it
+  directly without the arm step. Click a filled slot (showing its
+  frequency in MHz) to recall -- replays `set_freq`/`set_mode`, so it
+  goes through the exact same path as band buttons. Pure client-side
+  (`localStorage`, like span/step/floor/ceiling), since it's just
+  replaying existing commands -- no server-side storage needed. Verified
+  save, recall, right-click overwrite, and persistence across a reload
+  against the live receiver.
+
+## v0.5 — on-screen keypad for frequency entry
+
+- `static/index.html`, `static/app.css`, `static/app.js`: clicking the
+  frequency display now opens an on-screen numeric keypad (modal overlay)
+  instead of editing the field directly -- `#freq-input` is now
+  `readonly`. Keypad: digits 0-9, Clear, backspace, Cancel, Enter,
+  formatted with the same thousands-separator display as the main
+  readout as you type. Backdrop click, Escape, and Cancel all discard
+  without changing the frequency; Enter (button or key) commits via the
+  same `set_freq` command the click-to-tune/step controls already use.
+  Physical-keyboard digit/Backspace/Enter/Escape also work while the
+  keypad is open, for anyone who'd rather type than click. Verified
+  against the live receiver: every path (mouse and keyboard, commit and
+  cancel) round-trips correctly.
+
+## v0.4.1 — fix audio not actually stopping on mute
+
+- `static/app.js`: `playAudio()`'s scheduling had no cap on how far ahead
+  of real time it could queue -- `nextStartTime` only self-corrected when
+  it fell *behind*, never when it drifted *ahead*. Under bursty delivery
+  (network jitter, tab backgrounding) this could build an unbounded
+  backlog of already-scheduled `AudioBufferSourceNode`s; `audioCtx
+  .suspend()` alone doesn't retroactively cancel those, so a large enough
+  backlog kept audibly playing out after clicking "disable" (reported:
+  noticeable on 70cm). Fixed two ways: (1) `playAudio()` now drops
+  incoming audio rather than scheduling it if the backlog already reaches
+  300ms ahead of real time, so the backlog stays small; (2) every
+  scheduled source is tracked and explicitly `.stop()`-ed on mute, so
+  disabling is now a hard, immediate stop instead of relying on
+  `suspend()` to silence whatever had already queued up. Verified against
+  live traffic: confirmed 7 sources pending right at the new 300ms cap,
+  and all 7 explicitly stopped on the next click.
+
+## v0.4 — audio mute toggle fix, squelch
+
+- `static/app.js`: the "Enable Audio" button had no path back to off at
+  all -- fixed to a proper toggle. First attempt at the fix read
+  `audioCtx.state` synchronously right after an unawaited `resume()`/
+  `suspend()` call to decide direction; since that state transition is
+  asynchronous, a second click shortly after the first could read stale
+  state and get the toggle stuck back on (reproduced directly: two clicks
+  in quick succession both landed on "Mute Audio"). Fixed by tracking our
+  own `audioEnabled` intent flag instead of relying on the browser's async
+  `audioCtx.state`, both for the button and for `playAudio()`'s gate.
+- `backend/server.py`, `static/index.html`, `static/app.js`: new squelch
+  control -- enable checkbox + threshold slider (-120..-20 dBFS). When
+  enabled and the current signal (the same center-frequency reading the
+  S-meter uses) is below threshold, `demod_worker` zeroes the PCM before
+  it goes out (silence, not a dropped frame, so the browser's audio
+  scheduler stays glitch-free) rather than filtering client-side. A
+  "SQUELCHED" badge lights up next to the OVERLOAD badge when it's
+  actively gating. Especially useful on FM, where there's no SSB/CW
+  passband filter to reject inter-station hiss.
+
+## v0.3.1 — floor/ceiling contrast controls, step-row alignment fix
+
+- `static/app.css`: `#step-row` was missing from the `#band-row, #span-row`
+  padding rule, so its "STEP" label sat flush against the left edge
+  instead of aligning with "SPAN"/"BAND" above it. Added.
+- `static/index.html`, `static/app.js`: new **Floor**/**Ceiling** sliders
+  in the footer (-140..-40 dB / -80..0 dB, 10 dB minimum gap enforced
+  both ways). They control the shared dB range used for *both* the
+  spectrum trace's vertical scale and the waterfall's color mapping --
+  narrowing the range increases display contrast/sensitivity so weaker
+  signals stand out against the noise floor, without touching RF gain.
+  Pure client-side display state (unlike frequency/mode/gain, these don't
+  touch the server at all, so there's no cross-tab shared-state concern
+  for them).
+
+## v0.3 — selectable tuning step
+
+- `static/index.html`, `static/app.css`: new step-select row
+  (10Hz/100Hz/500Hz/1k/5k/10k) below the span row.
+- `static/app.js`: mouse-wheel tuning on the spectrum/waterfall now uses
+  the selected step, and always snaps the *current* frequency to the
+  nearest multiple of that step before moving one step further -- so an
+  off-grid frequency (e.g. from click-tuning) lands back on a clean
+  boundary the next time you scroll. Click-to-tune is unchanged (still
+  exact, unrounded) since it's for jumping near a signal, not fine
+  stepping. Applies to both the spectrum and waterfall canvases.
+
+## v0.2.1 — spectrum trace averaging
+
+- `backend/dsp.py`: `SpectrumEngine` now keeps an exponential moving
+  average of per-bin *power* (linear domain, alpha=0.25) across frames
+  instead of converting each single FFT snapshot straight to dB. A single
+  FFT snapshot is a very noisy power estimate regardless of resolution
+  (chi-squared distributed, ~5-6 dB of pure statistical noise per bin) --
+  that's what was making zoomed-in spans look useless and the waterfall
+  look like undifferentiated blur, not a sample-rate/resolution
+  limitation. This is the same "video/trace averaging" a real spectrum
+  analyzer applies. Verified via a raw WebSocket client: per-bin std dev
+  across consecutive frames dropped to ~1.2 dB.
+
+## v0.2 — selectable spectrum span + frequency axis
+
+- `backend/dsp.py`: `FFT_SIZE` raised 2048 -> 16384 (~122 Hz/bin instead of
+  ~976 Hz/bin) so a narrow zoomed span still has enough resolution to
+  distinguish individual signals. The backend always computes/sends the
+  full-bandwidth spectrum; span is a pure display-side crop, no wire
+  protocol change.
+- `static/index.html`, `static/app.css`: new span-select row (2M/1M/500k/
+  200k/100k/50k/20k/10k) below the band row.
+- `static/app.js`:
+  - `drawSpectrum()` now crops the full-bandwidth spectrum to the
+    selected span, centered on the tuned frequency, before plotting --
+    both the spectrum trace and the waterfall (which now renders the same
+    cropped view, so the two stay aligned).
+  - New frequency axis strip along the bottom of the spectrum panel:
+    "nice" 1-2-5 tick spacing (`niceTickSpacing()`) chosen from the
+    current span so grid lines land on round numbers, labeled in MHz with
+    a decimal count that scales with tick spacing.
+  - Click-to-tune and scroll-to-tune now map canvas position through the
+    *selected span*, not the fixed acquisition bandwidth, so they stay
+    accurate when zoomed in.
+  - Fixed a robustness gap found while testing this: initial canvas
+    sizing was deferred to `requestAnimationFrame`, which can be
+    throttled indefinitely in a backgrounded/non-composited tab, leaving
+    the canvas stuck at the browser's default 300px buffer width. Now
+    called directly at boot.
+
+## v0.1.1 — fix invisible spectrum/waterfall
+
+- `static/app.css`: `#spectrum` had no CSS `height`, so its layout size
+  was driven by the canvas `height` attribute -- which the resize handler
+  was also writing to (`clientHeight * devicePixelRatio`). On a scaled
+  display (devicePixelRatio != 1) each resize compounded this into a
+  runaway feedback loop; the canvas grew to 900px+ tall and pushed
+  everything off-screen. Fixed by giving both canvases explicit
+  CSS-driven layout height, decoupled from the buffer-resolution
+  attribute, plus `overflow:hidden` on `main` as a backstop.
+- `static/app.js`: binary WS frames are `[1-byte tag][payload]`, but
+  `new Float32Array(buf, 1)` / `new Int16Array(buf, 1)` both require a
+  byte offset that's a multiple of the element size -- 1 isn't a multiple
+  of 4 or 2, so both threw `RangeError` on every message (spectrum frames
+  silently failed to draw at all; audio was equally broken). Fixed with
+  `buf.slice(1)` to copy into a fresh zero-offset buffer before
+  constructing the typed array view.
+
+## v0.1 — initial browser SDR receiver (single tuner)
+
+- `backend/sdrplay_api.py`: ctypes binding to the real SDRplay API v3.15
+  DLL (`sdrplay_api.dll`), struct layouts transcribed from the vendor
+  headers in `C:\Program Files\SDRplay\API\inc`.
+- `backend/receiver.py`: opens the RSPduo in single-tuner mode (Tuner A,
+  the SMA port with the AM/HF option), zero-IF, fixed 2 Msps ADC rate,
+  streams IQ into a ring buffer. Exposes frequency/gain/LNA-state/AGC
+  setters.
+- `backend/ringbuffer.py`: thread-safe circular IQ buffer bridging the
+  SDRplay driver's real-time callback thread to the spectrum and demod
+  worker threads.
+- `backend/dsp.py`: windowed-FFT spectrum engine, cascaded decimation
+  (2 Msps -> 100 kHz -> 12.5 kHz), and AM/FM/USB/LSB/CW demodulators to
+  12.5 kHz PCM audio.
+- `backend/bands.py`: approximate VK amateur band plan (160m-70cm) for
+  the band-select buttons.
+- `backend/server.py`: FastAPI + WebSocket server. Binary frames carry
+  spectrum (float32 dB) and audio (int16 PCM); JSON carries state and
+  control commands. No ESP32/display hardware involved — the browser is
+  the whole UI.
+- `static/`: single-page browser frontend — canvas spectrum + scrolling
+  waterfall (click/scroll to tune), band/mode buttons, frequency entry,
+  gain/LNA/AGC/volume controls, S-meter, overload badge, Web Audio
+  playback.
+- Scope for this version: single active VFO (Tuner A only); Tuner B /
+  simultaneous dual-band receive deferred to a later version.
