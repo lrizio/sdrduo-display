@@ -1,0 +1,332 @@
+"""Spectrum (FFT) and demodulation DSP, working on IQ pulled from the ring
+buffer. Runs on plain CPU/numpy/scipy -- no GPU, no special hardware.
+
+Sample-rate chain for demod:
+    RAW_FS (2,000,000, from the RSPduo)
+      -> stage 1 decimate x20 -> INTERMEDIATE_FS (100,000)
+           [FM discriminator runs here -- needs the wider bandwidth
+            for +-5kHz NFM deviation]
+      -> stage 2 decimate x8  -> AUDIO_FS (12,500)
+           [AM envelope / SSB+CW complex bandpass run here]
+
+WFM (broadcast FM) is NOT the same signal as FM above -- ham NFM is
++-5 kHz deviation in a ~16 kHz channel (Carson's rule); broadcast FM is
++-75 kHz deviation in a ~180 kHz channel. The NFM chain's own first stage
+only preserves +-45 kHz, well short of what WFM needs, so WFM gets its
+own parallel, less-aggressive chain instead of trying to share NFM's:
+    RAW_FS (2,000,000)
+      -> wfm stage 1 decimate x4 -> WFM_IF_FS (500,000)
+           [discriminator runs here, +-75kHz deviation reference,
+            preserves the full broadcast channel]
+      -> wfm audio decimate x8 -> 62,500 -> decimate x5 -> AUDIO_FS (12,500)
+           [two audio-domain stages, same total /40 as the two together,
+            because a single /40 stage's transition band would alias]
+
+Every FIR filter's delay-line state, and the FM/WFM discriminator's
+cross-chunk sample, are threaded across `process()` calls (see `_stream`
+and the `_prev_if` handling) rather than reset to zero each call -- an
+earlier version reset everything per chunk, which produces a real
+transient (the filter "ringing" from a false zero-signal history) at the
+start of every chunk. For FM/WFM that transient runs straight through the
+discriminator and comes out as an audible click, once per chunk -- a
+steady, fast repeating "clacking" since chunks arrive tens of times a
+second, regardless of what's tuned in.
+"""
+from __future__ import annotations
+
+import numpy as np
+from scipy import signal
+
+RAW_FS = 2_000_000.0
+INTERMEDIATE_FS = 100_000.0
+AUDIO_FS = 12_500.0
+_STAGE1_FACTOR = 20
+_STAGE2_FACTOR = 8
+
+WFM_IF_FS = 500_000.0
+_WFM_IF_FACTOR = 4
+_WFM_AUDIO_A_FS = 62_500.0
+_WFM_AUDIO_A_FACTOR = 8
+_WFM_AUDIO_B_FACTOR = 5  # 62,500 / 5 = 12,500 = AUDIO_FS
+
+FFT_SIZE = 16384  # ~122 Hz/bin at RAW_FS -- fine enough to zoom into a single signal
+
+MODES = ("AM", "FM", "WFM", "USB", "LSB", "CW")
+
+
+class SpectrumEngine:
+    """Windowed FFT -> dB power spectrum, centered (DC in the middle).
+
+    A single FFT snapshot is a very noisy power estimate (high per-bin
+    variance regardless of resolution -- this is a statistics problem, not
+    a resolution problem). Exponential trace averaging in the linear power
+    domain smooths that out, the same "video averaging" a real spectrum
+    analyzer does, without adding perceptible tuning lag.
+    """
+
+    def __init__(self, fft_size: int = FFT_SIZE, avg_alpha: float = 0.25):
+        self.fft_size = fft_size
+        self._window = np.hanning(fft_size).astype(np.float32)
+        self._window_sum = float(np.sum(self._window))
+        self._avg_alpha = avg_alpha
+        self._avg_power: np.ndarray | None = None
+
+    def compute(self, iq: np.ndarray) -> np.ndarray:
+        n = self.fft_size
+        if len(iq) < n:
+            iq = np.pad(iq, (0, n - len(iq)))
+        x = iq[-n:] * self._window
+        spec = np.fft.fftshift(np.fft.fft(x))
+        mag = np.abs(spec) / (self._window_sum / 2.0)
+        power = np.maximum(mag * mag, 1e-24)
+
+        if self._avg_power is None or self._avg_power.shape != power.shape:
+            self._avg_power = power
+        else:
+            a = self._avg_alpha
+            self._avg_power = a * power + (1.0 - a) * self._avg_power
+
+        return (10.0 * np.log10(self._avg_power)).astype(np.float32)
+
+
+def center_power_dbfs(spectrum_db: np.ndarray, half_width_bins: int = 5) -> float:
+    n = len(spectrum_db)
+    c = n // 2
+    lo, hi = max(0, c - half_width_bins), min(n, c + half_width_bins)
+    return float(np.mean(spectrum_db[lo:hi]))
+
+
+def _zeros_zi(taps: np.ndarray, complex_: bool = False) -> np.ndarray:
+    """A zero-initial-state delay line sized correctly for `taps`, without
+    hardcoding `len(taps) - 1` at every call site."""
+    zi = signal.lfilter_zi(taps, [1.0]) * 0.0
+    return zi.astype(np.complex64) if complex_ else zi.astype(np.float64)
+
+
+class Demodulator:
+    """Converts raw IQ at RAW_FS into int16 PCM audio at AUDIO_FS."""
+
+    def __init__(self):
+        self.mode = "USB"
+
+        self._stage1_taps = signal.firwin(63, 45_000, fs=RAW_FS).astype(np.float32)
+        self._stage2_taps = signal.firwin(63, 5_500, fs=INTERMEDIATE_FS).astype(np.float32)
+
+        # stage1 is used by AM/SSB/CW/LSB. stage2 is used TWICE with the
+        # same coefficients but on two unrelated signals (stage1's complex
+        # IQ for AM/SSB/CW/LSB, and FM's real-valued discriminator output)
+        # -- same taps, but each use needs its own independent delay-line
+        # memory, hence two separate zi's below.
+        self._stage1_zi = _zeros_zi(self._stage1_taps, complex_=True)
+        self._stage2_zi_main = _zeros_zi(self._stage2_taps, complex_=True)
+        self._stage2_zi_fm = _zeros_zi(self._stage2_taps, complex_=False)
+
+        # FM-only pre-discriminator channel filter. stage1 is a generic
+        # 45 kHz-wide anti-alias filter shared by every mode -- fine for
+        # AM/SSB/CW, which narrow further with stage2/SSB filtering before
+        # detection, but the FM discriminator ran directly on that wide
+        # signal with no channel selectivity at all. An FM discriminator's
+        # noise output scales with its input bandwidth, and any adjacent
+        # carrier inside that 45 kHz window gets demodulated right along
+        # with the wanted station -- both the excess background noise and
+        # the "carrier on top of the audio" trace back to this. NFM channel
+        # bandwidth is ~16 kHz by Carson's rule (+-5 kHz deviation, 3 kHz
+        # audio), so narrow to a +-8 kHz complex lowpass before the
+        # discriminator.
+        self._fm_pre_taps = signal.firwin(63, 8_000, fs=INTERMEDIATE_FS).astype(np.float32)
+        self._fm_pre_zi = _zeros_zi(self._fm_pre_taps, complex_=True)
+
+        # FM-only post-discriminator audio filter. An FM discriminator's
+        # noise rises with frequency (the classic "noise triangle" --
+        # output is proportional to instantaneous frequency, so wideband
+        # phase noise gets amplified more at higher audio frequencies).
+        # The only shaping applied to the demodulated audio was stage2_taps
+        # (5.5 kHz), which exists as the anti-alias filter for the /8
+        # decimation and is shared with AM/SSB -- too wide for NFM voice
+        # (~3 kHz), so it passed the loudest part of that noise triangle
+        # straight through. This narrows FM specifically, after decimation,
+        # to normal ham NFM voice bandwidth.
+        self._fm_audio_taps = signal.firwin(63, 3_000, fs=AUDIO_FS).astype(np.float32)
+        self._fm_audio_zi = _zeros_zi(self._fm_audio_taps, complex_=False)
+
+        # FM discriminator's cross-chunk continuity: the last sample of
+        # each chunk's pre-discriminator IF, carried into the next chunk so
+        # the very first phase-difference sample of a new chunk is computed
+        # against real history instead of being dropped (source of a small
+        # per-chunk gap, on top of the much louder filter-reset click above).
+        self._fm_prev_if: np.ndarray | None = None
+
+        # WFM's own first stage: a much gentler decimation (x4, not x20) so
+        # the full +-90kHz-ish broadcast channel (Carson's rule for +-75kHz
+        # deviation + 15kHz audio) survives to the discriminator. Cutoff
+        # 100kHz leaves comfortable margin below the post-decimation
+        # Nyquist (250kHz).
+        self._wfm_if_taps = signal.firwin(63, 100_000, fs=RAW_FS).astype(np.float32)
+        self._wfm_if_zi = _zeros_zi(self._wfm_if_taps, complex_=True)
+        self._wfm_prev_if: np.ndarray | None = None
+
+        # WFM audio downsampling, 500,000 -> 12,500 (AUDIO_FS), split into
+        # two stages same as the RF side is -- a single /40 jump would need
+        # a filter transition band tighter than a modest tap count can
+        # deliver at these rates, aliasing noise back into the audio.
+        #
+        # This first stage is the critical one: broadcast FM carries more
+        # than mono program audio -- a 19kHz stereo pilot tone and a 38kHz
+        # L-R DSB-SC subcarrier (itself real audio content, just riding a
+        # suppressed carrier) sit right above the ~15kHz program audio
+        # band. A loose 63-tap filter here only attenuated the pilot by
+        # ~12dB and the subcarrier's lower edge by ~22dB -- not nearly
+        # enough, so that leftover multiplex content survived into the
+        # decimate-by-8 step, ALIASED down into the 9.5-23kHz range (well
+        # inside the audible band), and came out sounding like a second,
+        # garbled, unsynchronized "other" signal layered under the real
+        # program audio. A steep Kaiser-window filter (~60dB down by
+        # 19kHz) kills the whole multiplex before it ever reaches that
+        # decimation step. Still under 1.5ms per chunk against a 40ms
+        # budget, so the extra taps cost nothing that matters.
+        _wfm_audio_a_numtaps, _wfm_audio_a_beta = signal.kaiserord(
+            ripple=60, width=(19_000 - 15_000) / (WFM_IF_FS / 2)
+        )
+        if _wfm_audio_a_numtaps % 2 == 0:
+            _wfm_audio_a_numtaps += 1
+        self._wfm_audio_a_taps = signal.firwin(
+            _wfm_audio_a_numtaps, 15_000, window=("kaiser", _wfm_audio_a_beta), fs=WFM_IF_FS
+        ).astype(np.float32)
+        self._wfm_audio_b_taps = signal.firwin(63, 5_500, fs=_WFM_AUDIO_A_FS).astype(np.float32)
+        self._wfm_audio_a_zi = _zeros_zi(self._wfm_audio_a_taps, complex_=False)
+        self._wfm_audio_b_zi = _zeros_zi(self._wfm_audio_b_taps, complex_=False)
+
+        # (taps, zi) per (lo, hi) SSB/CW passband -- taps are cached
+        # already (identical filter design each time that key recurs); zi
+        # rides along in the same cache entry so USB/LSB/CW each keep their
+        # own continuous filter memory independent of the others.
+        self._ssb_cache: dict[tuple[float, float], tuple[np.ndarray, np.ndarray]] = {}
+
+        # AM envelope DC-blocker (1-pole high-pass, ~15 Hz corner at AUDIO_FS),
+        # state persisted across calls so there's no click at chunk edges.
+        alpha = 0.995
+        self._am_dc_b = np.array([1.0 - alpha])
+        self._am_dc_a = np.array([1.0, -alpha])
+        self._am_zi = signal.lfilter_zi(self._am_dc_b, self._am_dc_a) * 0.0
+
+        # FM discriminator DC-blocker: a residual tuning offset (not exactly
+        # on the station's center frequency) shows up as a DC bias on the
+        # discriminator output. Same 1-pole high-pass shape and same
+        # ~15 Hz-at-AUDIO_FS corner as the AM blocker -- applied after
+        # stage2 decimation, at AUDIO_FS, same as the AM blocker is.
+        self._fm_dc_b = np.array([1.0 - alpha])
+        self._fm_dc_a = np.array([1.0, -alpha])
+        self._fm_zi = signal.lfilter_zi(self._fm_dc_b, self._fm_dc_a) * 0.0
+
+        # WFM discriminator DC-blocker, same design, own persisted state
+        # (independent from FM's -- they run at different times/rates).
+        self._wfm_dc_b = np.array([1.0 - alpha])
+        self._wfm_dc_a = np.array([1.0, -alpha])
+        self._wfm_zi = signal.lfilter_zi(self._wfm_dc_b, self._wfm_dc_a) * 0.0
+
+    def set_mode(self, mode: str) -> None:
+        mode = mode.upper()
+        if mode not in MODES:
+            raise ValueError(f"unknown mode {mode!r}")
+        self.mode = mode
+
+    @staticmethod
+    def _stream(taps: np.ndarray, x: np.ndarray, zi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """lfilter with the delay-line state threaded in and back out, so
+        consecutive chunks filter as if they were one continuous signal."""
+        return signal.lfilter(taps, [1.0], x, zi=zi)
+
+    def _ssb_taps(self, f_lo: float, f_hi: float) -> tuple[np.ndarray, np.ndarray]:
+        key = (f_lo, f_hi)
+        cached = self._ssb_cache.get(key)
+        if cached is not None:
+            return cached
+        fc = (f_lo + f_hi) / 2.0
+        bw = f_hi - f_lo
+        numtaps = 127
+        lp = signal.firwin(numtaps, bw / 2.0, fs=AUDIO_FS).astype(np.float64)
+        n = np.arange(numtaps)
+        shift = np.exp(1j * 2 * np.pi * fc * n / AUDIO_FS)
+        taps = (lp * shift).astype(np.complex64)
+        zi = _zeros_zi(taps, complex_=True)
+        entry = (taps, zi)
+        self._ssb_cache[key] = entry
+        return entry
+
+    def _discriminate(
+        self, if_signal: np.ndarray, prev_attr: str, if_fs: float, deviation_ref_hz: float
+    ) -> np.ndarray:
+        """Phase discriminator with continuity across chunk boundaries: the
+        previous chunk's last IF sample is carried in as `prev`, so this
+        chunk's first phase-difference sample is computed against real
+        history instead of being dropped (and length stays == len(if_signal),
+        not len(if_signal) - 1)."""
+        prev = getattr(self, prev_attr)
+        combined = if_signal if prev is None else np.concatenate((prev, if_signal))
+        setattr(self, prev_attr, if_signal[-1:])
+        prod = combined[1:] * np.conj(combined[:-1])
+        phase = np.angle(prod)
+        return np.clip(phase * (if_fs / (2 * np.pi * deviation_ref_hz)), -1.0, 1.0).astype(np.float32)
+
+    def process(self, raw_iq: np.ndarray) -> np.ndarray:
+        if len(raw_iq) == 0:
+            return np.empty(0, dtype=np.int16)
+
+        if self.mode == "WFM":
+            # Own decimation from raw_iq, NOT the shared `stage1` below --
+            # that one only preserves +-45kHz, too narrow for a broadcast
+            # channel, and computing it here would be wasted work anyway.
+            wfm_if, self._wfm_if_zi = self._stream(self._wfm_if_taps, raw_iq, self._wfm_if_zi)
+            wfm_if = wfm_if[::_WFM_IF_FACTOR]
+            wide_audio = self._discriminate(wfm_if, "_wfm_prev_if", WFM_IF_FS, 75_000.0)
+            audio_a, self._wfm_audio_a_zi = self._stream(self._wfm_audio_a_taps, wide_audio, self._wfm_audio_a_zi)
+            audio_a = audio_a[::_WFM_AUDIO_A_FACTOR]
+            audio, self._wfm_audio_b_zi = self._stream(self._wfm_audio_b_taps, audio_a, self._wfm_audio_b_zi)
+            audio = audio[::_WFM_AUDIO_B_FACTOR].astype(np.float64)
+            dc_est, self._wfm_zi = signal.lfilter(
+                self._wfm_dc_b, self._wfm_dc_a, audio, zi=self._wfm_zi
+            )
+            audio = (audio - dc_est).astype(np.float32)
+            np.clip(audio, -1.0, 1.0, out=audio)
+            return (audio * 32767.0).astype(np.int16)
+
+        stage1, self._stage1_zi = self._stream(self._stage1_taps, raw_iq, self._stage1_zi)
+        stage1 = stage1[::_STAGE1_FACTOR]
+
+        if self.mode == "FM":
+            fm_if, self._fm_pre_zi = self._stream(self._fm_pre_taps, stage1, self._fm_pre_zi)
+            wide_audio = self._discriminate(fm_if, "_fm_prev_if", INTERMEDIATE_FS, 5000.0)
+            audio, self._stage2_zi_fm = self._stream(self._stage2_taps, wide_audio, self._stage2_zi_fm)
+            audio = audio[::_STAGE2_FACTOR].astype(np.float64)
+            dc_est, self._fm_zi = signal.lfilter(
+                self._fm_dc_b, self._fm_dc_a, audio, zi=self._fm_zi
+            )
+            audio = (audio - dc_est).astype(np.float32)
+            audio, self._fm_audio_zi = self._stream(self._fm_audio_taps, audio, self._fm_audio_zi)
+            audio = audio.astype(np.float32)
+        else:
+            stage2, self._stage2_zi_main = self._stream(self._stage2_taps, stage1, self._stage2_zi_main)
+            stage2 = stage2[::_STAGE2_FACTOR]
+            if self.mode == "AM":
+                env = np.abs(stage2).astype(np.float64)
+                dc_est, self._am_zi = signal.lfilter(
+                    self._am_dc_b, self._am_dc_a, env, zi=self._am_zi
+                )
+                audio = ((env - dc_est) * 2.0).astype(np.float32)
+            elif self.mode in ("USB", "CW"):
+                lo, hi = (300.0, 2700.0) if self.mode == "USB" else (550.0, 850.0)
+                taps, zi = self._ssb_taps(lo, hi)
+                filtered, zi = self._stream(taps, stage2, zi)
+                self._ssb_cache[(lo, hi)] = (taps, zi)
+                audio = (filtered.real * 2.0).astype(np.float32)
+            elif self.mode == "LSB":
+                lo, hi = -2700.0, -300.0
+                taps, zi = self._ssb_taps(lo, hi)
+                filtered, zi = self._stream(taps, stage2, zi)
+                self._ssb_cache[(lo, hi)] = (taps, zi)
+                audio = (filtered.real * 2.0).astype(np.float32)
+            else:
+                audio = np.zeros(len(stage2), dtype=np.float32)
+
+        np.clip(audio, -1.0, 1.0, out=audio)
+        return (audio * 32767.0).astype(np.int16)
