@@ -2,6 +2,30 @@
 
 All notable changes to SDRduo Display are documented here.
 
+## v0.13 — automatic GR/LNA re-sync on band crossings
+
+- `backend/receiver.py`: `set_frequency()` now detects a genuine band
+  crossing (HF/VHF/UHF, via a new `_gain_zone()` classifier -- 30MHz and
+  300MHz partition points, chosen conservatively to bracket wherever the
+  RSPduo's own internal front-end switches actually are, not a precise
+  claim about that threshold) and, when AGC is on, resets GR/LNA to a
+  safe starting point (`DEFAULT_GRDB`/LNA state 0 -- always a valid table
+  index, unlike whatever state happened to be active before) for AGC to
+  re-adjust from. This is what used to require manually hunting for a
+  working GR/LNA combination by hand every time you crossed from HF into
+  VHF broadcast or back (bands.py's band buttons only ever set
+  frequency+mode, never gain) -- and was a real contributor to earlier
+  "weak signal"/overload confusion this session, since a GR/LNA combo
+  that's sensible on quiet HF can be badly wrong for a strong local VHF
+  station. Left alone in manual gain mode (AGC off) -- overriding a
+  deliberately-chosen GR/LNA there would fight the user, not help them.
+  `_lock` changed `Lock` -> `RLock` since `set_frequency()` now calls
+  `set_gain()` internally, reusing its existing rollback-safe device
+  update rather than duplicating it. Verified against the live receiver
+  both ways: HF (14.22MHz, GR40/LNA4) -> VHF (100.1MHz FM broadcast)
+  correctly reset to GR40/LNA0; a manually-set LNA state 2 then survived
+  an in-zone-only retune (FM broadcast -> 2m) completely untouched.
+
 ## v0.12 — standalone installer
 
 - `Install/`: new self-contained `setup.exe` for installing on another

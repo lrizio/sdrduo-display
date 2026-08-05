@@ -48,6 +48,22 @@ LO_OFFSET_HZ = 150_000.0
 _NCO_PERIOD_SAMPLES = 40  # LO_OFFSET_HZ / RAW_FS == 3/40 exactly
 
 
+def _gain_zone(hz: float) -> str:
+    """Coarse RF zone, used only to decide when a band-crossing gain
+    re-sync is warranted -- not a claim about where the RSPduo's own
+    internal front-end switches actually happen (not precisely documented
+    here). 30MHz/300MHz are conservative, standard HF/VHF/UHF partition
+    points chosen to safely bracket wherever those real transitions are,
+    so every actual crossing gets caught even without knowing the exact
+    number.
+    """
+    if hz < 30_000_000:
+        return "HF"
+    if hz < 300_000_000:
+        return "VHF"
+    return "UHF"
+
+
 class RspduoReceiver:
     def __init__(self, ring: IQRingBuffer):
         self.ring = ring
@@ -55,13 +71,25 @@ class RspduoReceiver:
         self._device_params: "api.sdrplay_api_DeviceParamsT" = None  # type: ignore[assignment]
         self._rx_a = None
         self._dev_params = None
-        self._lock = threading.Lock()
+        # Reentrant: set_frequency() calls set_gain() internally (for the
+        # per-band gain re-sync below), and both take this lock.
+        self._lock = threading.RLock()
 
         self.frequency_hz = DEFAULT_FREQ_HZ
         self.grdb = DEFAULT_GRDB
         self.lna_state = DEFAULT_LNA_STATE
         self.agc_enabled = True
         self.overload = False
+
+        # Tracks which coarse RF zone we're in, so set_frequency() can
+        # tell a genuine band crossing (HF -> VHF broadcast, say) apart
+        # from ordinary in-band retuning. GR/LNA settings that were fine
+        # in the old zone can be invalid or just badly wrong for the new
+        # one (LNA state validity ranges differ by band; a GR that's
+        # sensible on quiet HF can overload a strong local VHF broadcast
+        # station) -- this is what used to require hunting for a working
+        # combination by hand after every band change.
+        self._gain_zone = _gain_zone(DEFAULT_FREQ_HZ)
 
         # Running sample count for the software re-centering NCO (see
         # LO_OFFSET_HZ above), wrapped mod its exact repeat period rather
@@ -179,6 +207,29 @@ class RspduoReceiver:
                     api.sdrplay_api_Update_Ext1_None,
                 ),
             )
+            new_zone = _gain_zone(hz)
+            zone_changed = new_zone != self._gain_zone
+            self._gain_zone = new_zone
+
+        # Only when AGC is on: that's an explicit signal the user wants
+        # gain auto-managed, so giving it a clean, known-valid starting
+        # point (LNA 0 -- always a valid table index, unlike whatever
+        # state happened to be active before) on a real band crossing is
+        # squarely in scope. Leave manual gain mode alone -- forcibly
+        # overriding a deliberately-chosen GR/LNA there would fight the
+        # user rather than help them.
+        if zone_changed and self.agc_enabled:
+            log.info(
+                "Gain zone changed to %s at %.0f Hz -- resetting GR/LNA for AGC to re-adjust from",
+                new_zone, hz,
+            )
+            try:
+                self.set_gain(grdb=DEFAULT_GRDB, lna_state=0)
+            except api.SdrplayError:
+                # Don't let a failed gain re-sync make the frequency
+                # change itself look like it failed -- it already
+                # succeeded above.
+                log.exception("Gain re-sync on band change failed")
 
     def set_gain(self, grdb: int | None = None, lna_state: int | None = None) -> None:
         # Valid (gRdB, LNAstate) combinations depend on the current LNA
