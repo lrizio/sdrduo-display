@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 import numpy as np
 
@@ -119,25 +120,48 @@ class RspduoReceiver:
         api.check("ApiVersion", api.dll.sdrplay_api_ApiVersion(api.C.byref(ver)))
         log.info("SDRplay API version %.2f", ver.value)
 
-        devices = (api.sdrplay_api_DeviceT * api.SDRPLAY_MAX_DEVICES)()
-        num = api.C.c_uint(0)
-        api.check(
-            "GetDevices",
-            api.dll.sdrplay_api_GetDevices(
-                devices, api.C.byref(num), api.SDRPLAY_MAX_DEVICES
-            ),
-        )
+        # sdrplay_api_GetDevices() can legitimately come back empty for a
+        # few seconds right after the SDRplay API Service has just
+        # started, or right after the RSPduo itself was just plugged in --
+        # device enumeration lags service startup. Failing instantly on
+        # one empty result produced a spurious "No RSPduo found" on a
+        # fresh install: hit for real when launching via the Desktop
+        # shortcut immediately failed, but a manual relaunch moments later
+        # (nothing else changed) succeeded. Retry for a few seconds before
+        # actually giving up. Every other sdrplay_api_* failure still
+        # raises immediately via api.check(), unchanged.
+        ENUM_TIMEOUT_S = 8.0
+        ENUM_POLL_S = 0.5
+        deadline = time.monotonic() + ENUM_TIMEOUT_S
         chosen = None
-        for i in range(num.value):
-            d = devices[i]
-            if d.hwVer == api.SDRPLAY_RSPduo_ID and d.valid:
-                chosen = d
-                break
-        if chosen is None:
-            raise RuntimeError(
-                "No RSPduo found by sdrplay_api_GetDevices "
-                f"({num.value} device(s) enumerated)."
+        num = api.C.c_uint(0)
+        attempt = 0
+        while chosen is None:
+            attempt += 1
+            devices = (api.sdrplay_api_DeviceT * api.SDRPLAY_MAX_DEVICES)()
+            api.check(
+                "GetDevices",
+                api.dll.sdrplay_api_GetDevices(
+                    devices, api.C.byref(num), api.SDRPLAY_MAX_DEVICES
+                ),
             )
+            for i in range(num.value):
+                d = devices[i]
+                if d.hwVer == api.SDRPLAY_RSPduo_ID and d.valid:
+                    chosen = d
+                    break
+            if chosen is None:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "No RSPduo found by sdrplay_api_GetDevices "
+                        f"({num.value} device(s) enumerated, {attempt} "
+                        f"attempt(s) over {ENUM_TIMEOUT_S:.0f}s)."
+                    )
+                log.info(
+                    "RSPduo not enumerated yet (attempt %d) -- retrying...",
+                    attempt,
+                )
+                time.sleep(ENUM_POLL_S)
 
         chosen.tuner = api.sdrplay_api_Tuner_A
         chosen.rspDuoMode = api.sdrplay_api_RspDuoMode_Single_Tuner

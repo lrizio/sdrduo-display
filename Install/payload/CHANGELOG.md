@@ -2,6 +2,35 @@
 
 All notable changes to SDRduo Display are documented here.
 
+## v0.15 — startup race: browser opening before the RSPduo was actually claimed
+
+- `backend/receiver.py`: `open()` now retries `sdrplay_api_GetDevices()`
+  for up to 8s (0.5s poll interval) instead of raising "No RSPduo found"
+  on the first empty result. Device enumeration can legitimately lag a
+  few seconds behind the SDRplay API Service itself starting, or behind
+  the RSPduo being plugged in -- reported for real on a fresh install:
+  launching via the Desktop shortcut failed immediately with "won't
+  connect" in the browser, but a manual relaunch moments later (nothing
+  else changed) worked fine. Every other `sdrplay_api_*` failure still
+  raises immediately via `api.check()`, unchanged -- only the "device not
+  enumerated yet" case retries.
+- `run.py`: `webbrowser.open()` used to fire before `uvicorn.run()` had
+  even started, racing the FastAPI `lifespan` handler's `receiver.open()`
+  call -- which, per the above, can legitimately take several seconds.
+  uvicorn doesn't bind its listening socket until `lifespan` startup
+  completes (confirmed directly: a startup failure never produces a
+  "Uvicorn running on ..." line and the port never opens), so a plain
+  connect-retry loop is a reliable readiness check with no fixed guess of
+  how long to wait. The browser tab now opens only once port 8080 is
+  actually accepting connections (30s cap, then opens anyway so the
+  console error is at least visible behind it, same failure mode as
+  before this fix for a genuinely absent device).
+- Verified against the live setup on this machine: with the RSPduo not
+  connected, `receiver.open()` now visibly retries enumeration for the
+  full 8s window (12-13 attempts) before raising a clear, attempt-counted
+  RuntimeError, instead of failing instantly.
+- `Install/payload/` re-synced, `Install/setup.exe` rebuilt.
+
 ## v0.14 — Exit button for a clean shutdown
 
 - `backend/server.py`: new `POST /api/shutdown` -- explicitly calls
