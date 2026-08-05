@@ -24,6 +24,8 @@
     <div id="overload-badge" class="badge hidden">OVERLOAD</div>
     <div id="sql-badge" class="badge badge-sql hidden">SQUELCHED</div>
   </div>
+
+  <button id="exit-btn" title="Stop the SDRduo Display server (releases the RSPduo cleanly)">Exit</button>
 </header>
 
 <div class="dual-row">
@@ -111,6 +113,13 @@
       <button id="keypad-cancel">Cancel</button>
       <button id="keypad-ok">Enter</button>
     </div>
+  </div>
+</div>
+
+<div id="shutdown-overlay" class="hidden">
+  <div id="shutdown-message">
+    <div id="shutdown-title">Server stopped</div>
+    <div id="shutdown-sub">The RSPduo has been released. You can close this tab.</div>
   </div>
 </div>
 

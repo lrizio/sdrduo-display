@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -227,6 +228,32 @@ async def no_cache_static(request, call_next):
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(str(STATIC_DIR / "index.html"))
+
+
+def _shutdown_worker() -> None:
+    # Runs on its own thread, NOT the asyncio event loop, so it can't
+    # block the response below from actually reaching the browser first.
+    time.sleep(0.3)
+    log.info("Shutting down (requested via UI)")
+    try:
+        # The one step that actually matters: release the RSPduo through
+        # the SDRplay API. Skipping this (e.g. a Task Manager "End Task"
+        # or closing the console window instead of Ctrl+C) is exactly
+        # what leaves the device "still claimed" until the USB stack
+        # times out on its own -- confirmed the hard way earlier this
+        # project. os._exit() below is a hard stop with no further
+        # Python-level cleanup, so this has to happen before it, not
+        # rely on it.
+        receiver.close()
+    except Exception:
+        log.exception("Error releasing the RSPduo during UI-triggered shutdown")
+    os._exit(0)
+
+
+@app.post("/api/shutdown")
+async def shutdown_endpoint() -> dict:
+    threading.Thread(target=_shutdown_worker, daemon=True).start()
+    return {"status": "shutting down"}
 
 
 @app.websocket("/ws")

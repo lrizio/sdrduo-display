@@ -81,6 +81,8 @@
   const volSlider = document.getElementById("vol-slider");
   const volVal = document.getElementById("vol-val");
   const audioBtn = document.getElementById("audio-btn");
+  const exitBtn = document.getElementById("exit-btn");
+  const shutdownOverlay = document.getElementById("shutdown-overlay");
 
   const specCanvas = document.getElementById("spectrum");
   const wfCanvas = document.getElementById("waterfall");
@@ -96,6 +98,10 @@
   // ---------------- WebSocket ----------------
   let ws = null;
   let wsReconnectTimer = null;
+  // Set right before requesting shutdown, so onclose doesn't spend the
+  // rest of the tab's life quietly retrying a server that was stopped on
+  // purpose -- see exitBtn's click handler below.
+  let intentionalShutdown = false;
 
   function connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -104,6 +110,7 @@
     ws.onopen = () => { dotEl.className = "dot dot-on"; };
     ws.onclose = () => {
       dotEl.className = "dot dot-off";
+      if (intentionalShutdown) return;
       clearTimeout(wsReconnectTimer);
       wsReconnectTimer = setTimeout(connect, 1000);
     };
@@ -837,6 +844,30 @@
       audioBtn.textContent = "Enable Audio";
       audioBtn.classList.remove("active");
     }
+  });
+
+  exitBtn.addEventListener("click", () => {
+    if (!confirm("Stop the SDRduo Display server?\n\nYou'll need to relaunch it to use the receiver again.")) {
+      return;
+    }
+    exitBtn.disabled = true;
+    exitBtn.textContent = "Stopping...";
+    intentionalShutdown = true;
+
+    // Stop audio immediately rather than let it trail off while the
+    // server's still tearing down.
+    if (audioEnabled) {
+      stopAllScheduled();
+      if (audioCtx) audioCtx.suspend();
+      audioEnabled = false;
+    }
+
+    // The server intentionally delays its actual exit slightly so this
+    // response has time to make it back here -- but fetch() itself can
+    // still fail if the connection drops mid-flight, which isn't an
+    // error worth surfacing (the shutdown is happening either way).
+    fetch("/api/shutdown", { method: "POST" }).catch(() => {});
+    shutdownOverlay.classList.remove("hidden");
   });
 
   function playAudio(int16) {

@@ -2,6 +2,36 @@
 
 All notable changes to SDRduo Display are documented here.
 
+## v0.14 — Exit button for a clean shutdown
+
+- `backend/server.py`: new `POST /api/shutdown` -- explicitly calls
+  `receiver.close()` (the SDRplay API release: `Uninit`/`ReleaseDevice`/
+  `Close`) on its own thread, then hard-exits the process
+  (`os._exit(0)`), rather than trying to simulate Ctrl+C via a Windows
+  console-signal trick (`CTRL_C_EVENT` has real caveats depending on how/
+  whether a console is actually attached to the process -- calling the
+  same cleanup code directly sidesteps that entirely and was more
+  reliable to reason about). This is the same release step Ctrl+C
+  already triggered via the FastAPI lifespan handler -- what changed is
+  giving the browser UI a way to trigger it too, without the user needing
+  to find the right console window. Confirmed the difference directly:
+  after a `Stop-Process -Force` kill (skips this), the next launch failed
+  with "No RSPduo found" for several seconds; after this endpoint's
+  clean shutdown, an immediate relaunch (no extra wait at all) found the
+  device right away.
+- `static/index.html`, `static/app.css`, `static/app.js`: new **Exit**
+  button (top-right, red-tinted to read as a stop/significant action, not
+  routine). Confirms before doing anything (`confirm()`) -- this ends the
+  session, no undo. On confirm: stops any playing audio immediately,
+  marks the shutdown as intentional so the WebSocket's auto-reconnect
+  loop doesn't spend the rest of the tab's life quietly retrying a server
+  that was stopped on purpose, POSTs to `/api/shutdown`, and shows a
+  full-screen "Server stopped" overlay so it's unambiguous the action
+  completed. `#shutdown-overlay.hidden` needed its own ID-specific rule
+  to actually win over `#shutdown-overlay`'s own `display: flex` --
+  same ID-vs-class specificity trap `#keypad-overlay` hit earlier this
+  project, applied proactively here instead of getting bitten by it again.
+
 ## v0.13 — automatic GR/LNA re-sync on band crossings
 
 - `backend/receiver.py`: `set_frequency()` now detects a genuine band
