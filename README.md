@@ -34,31 +34,38 @@ venv\Scripts\activate
 python run.py
 ```
 
-## Current scope (v0.1)
+## Current scope (v0.15)
 
 - Single active VFO on Tuner A (the SMA port with the AM/HF option), fixed
   2 Msps / zero-IF acquisition -- gives a 2 MHz-wide panadapter around the
   tuned frequency.
-- Modes: AM, FM (narrow), USB, LSB, CW.
-- Spectrum + scrolling waterfall, click or scroll-wheel to tune.
+- Modes: AM, FM (narrow), WFM (broadcast FM), USB, LSB, CW.
+- Spectrum + scrolling waterfall, click or scroll-wheel to tune. Selectable
+  span (2M down to 10k) and tuning step (10Hz-10k), both remembered across
+  reloads. Floor/ceiling sliders control display contrast independently of
+  RF gain.
 - Band-select buttons for the VK amateur bands 160m-70cm (see
   `backend/bands.py` -- edges are approximate, not the authoritative ACMA
   band plan).
-- Manual gain reduction / LNA state sliders, or hardware AGC.
-- S-meter (relative dBFS) and ADC-overload badge.
+- On-screen keypad for frequency entry (unit-aware, MHz/kHz toggle, live
+  preview) plus 8 memory preset slots (M1-M8), saved/recalled client-side.
+- Manual gain reduction / LNA state sliders, or hardware AGC -- with
+  automatic GR/LNA re-sync on HF/VHF/UHF band crossings when AGC is on.
+- Squelch (enable + threshold), S-meter (ham S-unit convention) and
+  ADC-overload badge.
+- Exit button in the UI for a clean shutdown (releases the SDRplay API
+  device properly instead of requiring a console kill).
+- Standalone Windows installer (`Install/setup.exe`) for installing on
+  another machine -- see `Install/README.txt`.
 
 ## Not yet implemented
 
 - Tuner B / simultaneous dual-band receive (RSPduo can do both tuners at
   once; this version only drives Tuner A).
-- Digital mode decoding (FT8 etc.), recording, memory channels, squelch.
-- Any persistence of settings between runs -- it always starts on 20m SSB.
+- Digital mode decoding (FT8 etc.) and recording.
+- Persistence of frequency/mode between runs -- it always starts on 20m
+  SSB (display settings like span/step/memories/floor/ceiling do persist,
+  client-side via `localStorage`).
 
-## Known limitation
-
-Audio decimation (2 Msps -> 100 kHz -> 12.5 kHz) is done per-chunk without
-carrying filter state across chunk boundaries, so there can be faint
-clicks roughly every 40 ms. Fine for casual listening; a streaming
-decimator would remove it if it turns out to matter.
-
-See `CHANGELOG.md` for version history and `backend/` for the code layout.
+See `CHANGELOG.md` for version history, `docs/` for the end-user guide, and
+`backend/` for the code layout.
