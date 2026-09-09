@@ -2,6 +2,57 @@
 
 All notable changes to SDRduo Display are documented here.
 
+## v0.17 — AF AGC, so audio level stops tracking signal strength
+
+Reported after the v0.16 bench test: audio too quiet with the PC volume
+at full and the app's Volume slider at maximum. Measured, and the
+complaint was well founded — nothing in this chain set the audio level
+at all. AM and SSB come out directly proportional to RF amplitude, and
+the browser's Volume control only reaches 2x:
+
+| mode | RF amp | audio before |
+| --- | --- | --- |
+| WFM | any | -14.0 dBFS (constant — it's phase-derived) |
+| AM | 0.1 | -23.0 dBFS |
+| AM | 0.02 | -37.0 dBFS |
+| USB | 0.005 | -43.0 dBFS |
+
+- `backend/dsp.py`: new `_AudioAgc`, applied to every mode's audio as the
+  last step of `process()`. Everything now settles at about -9.2 dBFS
+  regardless of signal strength: WFM +4.7dB, AM at 0.02 +27.8dB, USB at
+  0.005 +33.8dB. Gain is reset in `set_mode()`, since a gain settled on a
+  weak SSB signal would otherwise arrive at WFM as an instant blast.
+
+Design notes, because the naive version of this is worse than none:
+
+- **It cannot clip.** Each block's peak is known before its gain is
+  applied, so the gain is capped at `ceiling / peak`. Measured 0.000%
+  clipped everywhere tested, including an AM signal stepping 0.02 -> 0.5
+  (28dB) mid-stream, where the worst peak reached 0.777.
+- **Gain reductions are flat across their block, not ramped into.**
+  Ramping into a reduction leaves the start of the block multiplied by
+  the old, too-large gain -- and the peak that triggered the limiting is
+  often right there. Flat is what makes "cannot clip" true rather than
+  nearly true.
+- **Silence is held, not chased.** Below `floor_rms` the gain is frozen.
+  Otherwise every gap between words, and every squelched moment, would
+  wind the noise floor up to full scale and roar the instant a signal
+  returned. Dead-air output on AM/SSB measures 0.00000 rms.
+- **Release is slow (1.5s), attack immediate.** A weak signal appearing
+  after dead air reaches full level over ~2-3s rather than pumping
+  between syllables.
+
+Block stats are computed for a whole chunk at once and only the gain
+recursion is sequential, so the cost is 15.0% -> 15.8% of one core.
+Verified across all six modes on ragged chunks from 200 to 65536 samples:
+no exceptions, no clipping, no sample-rate drift, and the v0.16
+decimation fix still measures identically chunked vs single-call.
+
+One consequence worth knowing: on FM/WFM, *unsquelched* dead-air hiss is
+now normalised up to the same target as programme audio, so it is louder
+than it used to be. That is what an AGC does with noise -- use the
+squelch.
+
 ## v0.16 — decimate on a continuous grid across chunk boundaries
 
 Every decimation in the demod chain was a plain `x[::factor]`, which

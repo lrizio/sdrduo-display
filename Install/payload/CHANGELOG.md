@@ -2,6 +2,101 @@
 
 All notable changes to SDRduo Display are documented here.
 
+## v0.17 — AF AGC, so audio level stops tracking signal strength
+
+Reported after the v0.16 bench test: audio too quiet with the PC volume
+at full and the app's Volume slider at maximum. Measured, and the
+complaint was well founded — nothing in this chain set the audio level
+at all. AM and SSB come out directly proportional to RF amplitude, and
+the browser's Volume control only reaches 2x:
+
+| mode | RF amp | audio before |
+| --- | --- | --- |
+| WFM | any | -14.0 dBFS (constant — it's phase-derived) |
+| AM | 0.1 | -23.0 dBFS |
+| AM | 0.02 | -37.0 dBFS |
+| USB | 0.005 | -43.0 dBFS |
+
+- `backend/dsp.py`: new `_AudioAgc`, applied to every mode's audio as the
+  last step of `process()`. Everything now settles at about -9.2 dBFS
+  regardless of signal strength: WFM +4.7dB, AM at 0.02 +27.8dB, USB at
+  0.005 +33.8dB. Gain is reset in `set_mode()`, since a gain settled on a
+  weak SSB signal would otherwise arrive at WFM as an instant blast.
+
+Design notes, because the naive version of this is worse than none:
+
+- **It cannot clip.** Each block's peak is known before its gain is
+  applied, so the gain is capped at `ceiling / peak`. Measured 0.000%
+  clipped everywhere tested, including an AM signal stepping 0.02 -> 0.5
+  (28dB) mid-stream, where the worst peak reached 0.777.
+- **Gain reductions are flat across their block, not ramped into.**
+  Ramping into a reduction leaves the start of the block multiplied by
+  the old, too-large gain -- and the peak that triggered the limiting is
+  often right there. Flat is what makes "cannot clip" true rather than
+  nearly true.
+- **Silence is held, not chased.** Below `floor_rms` the gain is frozen.
+  Otherwise every gap between words, and every squelched moment, would
+  wind the noise floor up to full scale and roar the instant a signal
+  returned. Dead-air output on AM/SSB measures 0.00000 rms.
+- **Release is slow (1.5s), attack immediate.** A weak signal appearing
+  after dead air reaches full level over ~2-3s rather than pumping
+  between syllables.
+
+Block stats are computed for a whole chunk at once and only the gain
+recursion is sequential, so the cost is 15.0% -> 15.8% of one core.
+Verified across all six modes on ragged chunks from 200 to 65536 samples:
+no exceptions, no clipping, no sample-rate drift, and the v0.16
+decimation fix still measures identically chunked vs single-call.
+
+One consequence worth knowing: on FM/WFM, *unsquelched* dead-air hiss is
+now normalised up to the same target as programme audio, so it is louder
+than it used to be. That is what an AGC does with noise -- use the
+squelch.
+
+## v0.16 — decimate on a continuous grid across chunk boundaries
+
+Every decimation in the demod chain was a plain `x[::factor]`, which
+restarts its sampling grid at index 0 on every call. That is only
+correct while every chunk length is an exact multiple of the factor,
+and `server.py` reads *up to* `max_n` samples from the ring, so in
+general it isn't: WFM's final /5 stage got 2048-sample chunks and
+emitted 410 audio samples where 409.6 was right, advancing the time
+base ~32us at every chunk boundary, ~30 times a second.
+
+Found in HackRF SDR TRX (whose demod chain was ported from this one,
+so the bug went the other way for once) and ported back. Measured here
+the same way — the same IQ demodulated in 65536-sample chunks, as the
+server actually does it, versus a single call:
+
+| mode | tone | chunked, before | chunked, after |
+| --- | --- | --- | --- |
+| WFM | 4kHz | -39.1 dB | **-18.4 dB** |
+| AM | 3.5kHz | -33.7 dB | **-19.7 dB** |
+| FM | 1kHz | -5.5 dB | -5.4 dB |
+
+Both fixed figures now match the single-call result exactly, so WFM was
+losing 20.7dB of treble and AM 14dB. FM is unaffected: its audio is only
+3kHz wide, so it had almost nothing above the smear to lose -- which is
+also why this survived so long unnoticed, along with the fact that a
+steady single tone has no phase reference to violate and so passes a
+response test that real programme material fails.
+
+- `backend/dsp.py`: new `_decimate(x, factor, phase)` returns the phase
+  the next chunk must start at, and `Demodulator._dec()` threads that
+  state per stage through `self._dec_phase` -- the same shape as
+  `_stream()` already threading filter delay lines. Applied to all six
+  decimation points (stage1, stage2 main/FM, and WFM's IF/A/B).
+
+Verified: chunked output now matches single-call output exactly; audio
+sample-rate drift over a run drops from ~0.1% to ~0.006%; and no mode
+raises on randomly-sized chunks between 1000 and 65536 samples.
+
+Installer rebuilt (`Install/build.ps1`). While syncing `Install/payload\`
+for that, its `static/index.html` turned out to have drifted from the
+project's own -- the Volume control sat in a different position, an
+8-line reorder. Resolved in favour of `static/index.html`, since the
+payload is documented as a manual mirror of the project source.
+
 ## v0.15 — startup race: browser opening before the RSPduo was actually claimed
 
 - `backend/receiver.py`: `open()` now retries `sdrplay_api_GetDevices()`

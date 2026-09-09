@@ -103,6 +103,104 @@ def _zeros_zi(taps: np.ndarray, complex_: bool = False) -> np.ndarray:
     return zi.astype(np.complex64) if complex_ else zi.astype(np.float64)
 
 
+class _AudioAgc:
+    """Audio-frequency AGC with a look-ahead limiter: holds demodulated
+    audio near a target level regardless of signal strength, without ever
+    clipping.
+
+    Needed because nothing else in this chain sets the audio level. AM and
+    SSB come out directly proportional to RF amplitude, so a weak station
+    lands tens of dB down -- measured -29dBFS on an AM carrier at 0.05 of
+    full scale, and -43dBFS at 0.01 -- while the browser's volume control
+    only reaches 2x, nowhere near enough to make that up. WFM is a
+    different problem: being phase-derived its level doesn't depend on
+    signal strength at all, but it sat at a constant ~-14dBFS peaking at
+    0.37, leaving most of the available headroom unused. So the target
+    here is deliberately louder than the level WFM already had -- matching
+    it would have been a no-op for exactly the mode that prompted this.
+
+    Gain is recomputed per block from that block's RMS, then ramped
+    linearly across the block's samples: no Python loop over samples, and
+    no zipper noise from stepping the gain at block edges. Block stats are
+    computed for the whole chunk at once; only the gain recursion itself
+    is sequential, and that's scalar arithmetic over ~8 blocks per chunk.
+
+    The limiter is exact rather than approximate, because each block's
+    peak is known *before* its gain is applied: the gain is never allowed
+    to exceed `ceiling / peak`, so a block physically cannot clip. Gain
+    reductions take effect immediately and flat across the block (a step
+    down is far less objectionable than clipping through a ramp that
+    arrives too late); increases are eased in with a slow release so the
+    level doesn't pump between syllables.
+
+    Below `floor_rms` the gain is *held* rather than wound up -- otherwise
+    every gap between words, and every squelched moment, would slowly
+    amplify the noise floor to full scale and roar the instant a signal
+    returned.
+    """
+
+    BLOCK = 64  # samples, ~5ms at AUDIO_FS -- also the limiter's look-ahead
+
+    def __init__(self, fs: float = AUDIO_FS, target_rms: float = 0.35,
+                 ceiling: float = 0.95, max_gain: float = 80.0,
+                 min_gain: float = 0.02, release_s: float = 1.5,
+                 floor_rms: float = 2e-4):
+        self._target = target_rms
+        self._ceiling = ceiling
+        self._max_gain = max_gain
+        self._min_gain = min_gain
+        self._floor = floor_rms
+        # One-pole release coefficient, evaluated once per block rather
+        # than per sample, hence block_dt (not 1/fs) against the constant.
+        self._a_release = 1.0 - float(np.exp(-(self.BLOCK / fs) / release_s))
+        self.gain = 1.0
+
+    def reset(self) -> None:
+        self.gain = 1.0
+
+    def process(self, audio: np.ndarray) -> np.ndarray:
+        n = len(audio)
+        if n == 0:
+            return audio
+        nblocks = -(-n // self.BLOCK)  # ceil
+        padded = np.zeros(nblocks * self.BLOCK, dtype=np.float32)
+        padded[:n] = audio
+        blocks = padded.reshape(nblocks, self.BLOCK)
+        rms = np.sqrt(np.mean(blocks.astype(np.float64) ** 2, axis=1))
+        peak = np.max(np.abs(blocks), axis=1)
+
+        # Start/end gain per block, not one running chain: a limiting
+        # block has to be flat at its reduced gain, because ramping *into*
+        # a reduction means the early part of the block is still being
+        # multiplied by the old, too-large gain -- and the peak that
+        # triggered the limiting may well be right there. Flat is what
+        # makes "cannot clip" actually true rather than nearly true.
+        g_start = np.empty(nblocks, dtype=np.float64)
+        g_end = np.empty(nblocks, dtype=np.float64)
+        g = self.gain
+        for i in range(nblocks):
+            if rms[i] < self._floor:
+                desired = g                     # hold: don't chase silence up
+            else:
+                desired = min(max(self._target / rms[i], self._min_gain), self._max_gain)
+            if peak[i] > 0.0:                   # never let this block clip
+                desired = min(desired, self._ceiling / peak[i])
+            if desired < g:
+                g = desired                     # limiter: down now, flat
+                g_start[i] = g_end[i] = g
+            else:
+                g_start[i] = g
+                g += (desired - g) * self._a_release
+                g_end[i] = g
+        self.gain = g
+
+        # Piecewise-linear gain, continuous across chunk boundaries except
+        # where the limiter deliberately steps.
+        ramp = np.linspace(g_start, g_end, self.BLOCK, endpoint=False,
+                           axis=1, dtype=np.float64).astype(np.float32)
+        return (blocks * ramp).reshape(-1)[:n]
+
+
 class Demodulator:
     """Converts raw IQ at RAW_FS into int16 PCM audio at AUDIO_FS."""
 
@@ -209,6 +307,10 @@ class Demodulator:
         # start, and switching mode already clicks.
         self._dec_phase: dict[str, int] = {}
 
+        # AF AGC, applied to every mode's audio as the last step of
+        # process() -- see _AudioAgc for why this chain needs one.
+        self._agc = _AudioAgc()
+
         # AM envelope DC-blocker (1-pole high-pass, ~15 Hz corner at AUDIO_FS),
         # state persisted across calls so there's no click at chunk edges.
         alpha = 0.995
@@ -236,6 +338,9 @@ class Demodulator:
         if mode not in MODES:
             raise ValueError(f"unknown mode {mode!r}")
         self.mode = mode
+        # Modes sit at very different natural levels, so a gain settled on
+        # a weak SSB signal would arrive at WFM as an instant blast.
+        self._agc.reset()
 
     @staticmethod
     def _stream(taps: np.ndarray, x: np.ndarray, zi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -325,6 +430,7 @@ class Demodulator:
                 self._wfm_dc_b, self._wfm_dc_a, audio, zi=self._wfm_zi
             )
             audio = (audio - dc_est).astype(np.float32)
+            audio = self._agc.process(audio)
             np.clip(audio, -1.0, 1.0, out=audio)
             return (audio * 32767.0).astype(np.int16)
 
@@ -366,5 +472,6 @@ class Demodulator:
             else:
                 audio = np.zeros(len(stage2), dtype=np.float32)
 
+        audio = self._agc.process(audio)
         np.clip(audio, -1.0, 1.0, out=audio)
         return (audio * 32767.0).astype(np.int16)
