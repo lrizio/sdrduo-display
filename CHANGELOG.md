@@ -2,6 +2,50 @@
 
 All notable changes to SDRduo Display are documented here.
 
+## v0.16 — decimate on a continuous grid across chunk boundaries
+
+Every decimation in the demod chain was a plain `x[::factor]`, which
+restarts its sampling grid at index 0 on every call. That is only
+correct while every chunk length is an exact multiple of the factor,
+and `server.py` reads *up to* `max_n` samples from the ring, so in
+general it isn't: WFM's final /5 stage got 2048-sample chunks and
+emitted 410 audio samples where 409.6 was right, advancing the time
+base ~32us at every chunk boundary, ~30 times a second.
+
+Found in HackRF SDR TRX (whose demod chain was ported from this one,
+so the bug went the other way for once) and ported back. Measured here
+the same way — the same IQ demodulated in 65536-sample chunks, as the
+server actually does it, versus a single call:
+
+| mode | tone | chunked, before | chunked, after |
+| --- | --- | --- | --- |
+| WFM | 4kHz | -39.1 dB | **-18.4 dB** |
+| AM | 3.5kHz | -33.7 dB | **-19.7 dB** |
+| FM | 1kHz | -5.5 dB | -5.4 dB |
+
+Both fixed figures now match the single-call result exactly, so WFM was
+losing 20.7dB of treble and AM 14dB. FM is unaffected: its audio is only
+3kHz wide, so it had almost nothing above the smear to lose -- which is
+also why this survived so long unnoticed, along with the fact that a
+steady single tone has no phase reference to violate and so passes a
+response test that real programme material fails.
+
+- `backend/dsp.py`: new `_decimate(x, factor, phase)` returns the phase
+  the next chunk must start at, and `Demodulator._dec()` threads that
+  state per stage through `self._dec_phase` -- the same shape as
+  `_stream()` already threading filter delay lines. Applied to all six
+  decimation points (stage1, stage2 main/FM, and WFM's IF/A/B).
+
+Verified: chunked output now matches single-call output exactly; audio
+sample-rate drift over a run drops from ~0.1% to ~0.006%; and no mode
+raises on randomly-sized chunks between 1000 and 65536 samples.
+
+Installer rebuilt (`Install/build.ps1`). While syncing `Install/payload\`
+for that, its `static/index.html` turned out to have drifted from the
+project's own -- the Volume control sat in a different position, an
+8-line reorder. Resolved in favour of `static/index.html`, since the
+payload is documented as a manual mirror of the project source.
+
 ## v0.15 — startup race: browser opening before the RSPduo was actually claimed
 
 - `backend/receiver.py`: `open()` now retries `sdrplay_api_GetDevices()`

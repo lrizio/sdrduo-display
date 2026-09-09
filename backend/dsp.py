@@ -202,6 +202,13 @@ class Demodulator:
         # own continuous filter memory independent of the others.
         self._ssb_cache: dict[tuple[float, float], tuple[np.ndarray, np.ndarray]] = {}
 
+        # Decimation-grid phase per stage, threaded across chunks by
+        # _decimate() (see there). Keyed by stage rather than kept as six
+        # separate attributes; a mode that isn't running just holds a
+        # stale phase, which is harmless -- any phase is a valid grid
+        # start, and switching mode already clicks.
+        self._dec_phase: dict[str, int] = {}
+
         # AM envelope DC-blocker (1-pole high-pass, ~15 Hz corner at AUDIO_FS),
         # state persisted across calls so there's no click at chunk edges.
         alpha = 0.995
@@ -235,6 +242,37 @@ class Demodulator:
         """lfilter with the delay-line state threaded in and back out, so
         consecutive chunks filter as if they were one continuous signal."""
         return signal.lfilter(taps, [1.0], x, zi=zi)
+
+    @staticmethod
+    def _decimate(x: np.ndarray, factor: int, phase: int) -> tuple[np.ndarray, int]:
+        """Keep every `factor`-th sample starting at `phase`, and return the
+        phase the NEXT chunk has to start at for the decimation grid to stay
+        continuous across the join.
+
+        A plain `x[::factor]` restarts that grid at index 0 for every chunk,
+        which is only correct while every chunk length is an exact multiple
+        of `factor`. `server.py` reads "up to" `max_n` samples from the ring,
+        so in general it isn't: WFM's final /5 stage gets 2048-sample chunks
+        and emits 410 audio samples where 409.6 is right, advancing the time
+        base ~32us at every chunk boundary. Steady tones survive that (they
+        have no phase reference to violate), which is why single-tone tests
+        looked clean, but real programme material hears it as a click ~30
+        times a second and anything above a couple of kHz smears: a 4kHz
+        tone measures 21dB down through the chunked path versus a single
+        call. Same class of bug as an unthreaded filter delay line, and it
+        wants the same fix -- carry the state across.
+
+        Ported from HackRF SDR TRX, where this chain came from and where the
+        bug was found (its CHANGELOG.md v0.2.6 has the full measurements).
+        """
+        return x[phase::factor], (phase - len(x)) % factor
+
+    def _dec(self, key: str, x: np.ndarray, factor: int) -> np.ndarray:
+        """`_decimate()` with this stage's phase threaded in and back out,
+        so consecutive chunks decimate on one continuous grid -- the same
+        shape as `_stream()` doing it for filter state."""
+        y, self._dec_phase[key] = self._decimate(x, factor, self._dec_phase.get(key, 0))
+        return y
 
     def _ssb_taps(self, f_lo: float, f_hi: float) -> tuple[np.ndarray, np.ndarray]:
         key = (f_lo, f_hi)
@@ -277,12 +315,12 @@ class Demodulator:
             # that one only preserves +-45kHz, too narrow for a broadcast
             # channel, and computing it here would be wasted work anyway.
             wfm_if, self._wfm_if_zi = self._stream(self._wfm_if_taps, raw_iq, self._wfm_if_zi)
-            wfm_if = wfm_if[::_WFM_IF_FACTOR]
+            wfm_if = self._dec("wfm_if", wfm_if, _WFM_IF_FACTOR)
             wide_audio = self._discriminate(wfm_if, "_wfm_prev_if", WFM_IF_FS, 75_000.0)
             audio_a, self._wfm_audio_a_zi = self._stream(self._wfm_audio_a_taps, wide_audio, self._wfm_audio_a_zi)
-            audio_a = audio_a[::_WFM_AUDIO_A_FACTOR]
+            audio_a = self._dec("wfm_a", audio_a, _WFM_AUDIO_A_FACTOR)
             audio, self._wfm_audio_b_zi = self._stream(self._wfm_audio_b_taps, audio_a, self._wfm_audio_b_zi)
-            audio = audio[::_WFM_AUDIO_B_FACTOR].astype(np.float64)
+            audio = self._dec("wfm_b", audio, _WFM_AUDIO_B_FACTOR).astype(np.float64)
             dc_est, self._wfm_zi = signal.lfilter(
                 self._wfm_dc_b, self._wfm_dc_a, audio, zi=self._wfm_zi
             )
@@ -291,13 +329,13 @@ class Demodulator:
             return (audio * 32767.0).astype(np.int16)
 
         stage1, self._stage1_zi = self._stream(self._stage1_taps, raw_iq, self._stage1_zi)
-        stage1 = stage1[::_STAGE1_FACTOR]
+        stage1 = self._dec("stage1", stage1, _STAGE1_FACTOR)
 
         if self.mode == "FM":
             fm_if, self._fm_pre_zi = self._stream(self._fm_pre_taps, stage1, self._fm_pre_zi)
             wide_audio = self._discriminate(fm_if, "_fm_prev_if", INTERMEDIATE_FS, 5000.0)
             audio, self._stage2_zi_fm = self._stream(self._stage2_taps, wide_audio, self._stage2_zi_fm)
-            audio = audio[::_STAGE2_FACTOR].astype(np.float64)
+            audio = self._dec("stage2_fm", audio, _STAGE2_FACTOR).astype(np.float64)
             dc_est, self._fm_zi = signal.lfilter(
                 self._fm_dc_b, self._fm_dc_a, audio, zi=self._fm_zi
             )
@@ -306,7 +344,7 @@ class Demodulator:
             audio = audio.astype(np.float32)
         else:
             stage2, self._stage2_zi_main = self._stream(self._stage2_taps, stage1, self._stage2_zi_main)
-            stage2 = stage2[::_STAGE2_FACTOR]
+            stage2 = self._dec("stage2", stage2, _STAGE2_FACTOR)
             if self.mode == "AM":
                 env = np.abs(stage2).astype(np.float64)
                 dc_est, self._am_zi = signal.lfilter(
