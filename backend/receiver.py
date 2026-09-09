@@ -255,6 +255,29 @@ class RspduoReceiver:
                 # succeeded above.
                 log.exception("Gain re-sync on band change failed")
 
+    @property
+    def current_grdb(self) -> int:
+        """The gain reduction the tuner is *actually* running, which is not
+        `self.grdb` whenever the hardware AGC is enabled.
+
+        `self.grdb` is only ever the last value we commanded. With AGC on,
+        the API drives gRdB itself and writes the result back into the
+        tuner params struct, so the commanded value goes stale the moment
+        the AGC moves -- measured 40 commanded against 43 actual on a live
+        signal, with the UI cheerfully reporting 40. Nothing was reading
+        the struct back: `_on_event` handles only PowerOverloadChange and
+        DeviceRemoved, never the API's gain-change event.
+
+        Falls back to the commanded value when the device isn't open,
+        since the struct doesn't exist to read then.
+        """
+        if self._rx_a is None:
+            return self.grdb
+        try:
+            return int(self._rx_a.tunerParams.gain.gRdB)
+        except Exception:  # pragma: no cover -- struct gone mid-teardown
+            return self.grdb
+
     def set_gain(self, grdb: int | None = None, lna_state: int | None = None) -> None:
         # Valid (gRdB, LNAstate) combinations depend on the current LNA
         # table, which varies with frequency/AM-port -- not every value the

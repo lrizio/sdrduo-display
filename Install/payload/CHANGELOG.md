@@ -2,6 +2,37 @@
 
 All notable changes to SDRduo Display are documented here.
 
+## v0.18 — gain readout showed what we asked for, not what the tuner is doing
+
+Found while investigating whether the hardware AGC was hurting SNR (it
+isn't — measured 0.5dB between AGC and best manual gain, stable across
+2s/12s/32s settles, so no hunting). The real defect was next to it: the
+Gain reduction readout reports `receiver.grdb`, the last value the app
+*commanded*, which goes stale the moment the AGC moves. Caught it
+showing 30 while the tuner was actually running 47.
+
+The value is available — the API writes the AGC's current gain back into
+the tuner params struct — but nothing read it: `_on_event` handles only
+`PowerOverloadChange` and `DeviceRemoved`.
+
+- `backend/receiver.py`: new `current_grdb` property reading the live
+  struct, falling back to the commanded value when the device isn't open.
+- `backend/server.py`: state now carries `grdbActual` alongside `grdb`.
+- `static/app.js`: the readout and slider follow `grdbActual` always, with
+  a "(AGC)" marker saying who is driving it.
+
+Note the marker says *who is driving*, not *which number to show*. A
+first attempt displayed the commanded value whenever AGC was off, which
+reintroduced the same bug in a smaller form: switching AGC off leaves
+the gain wherever the AGC last put it rather than snapping back, so
+"AGC off" showed 30 next to a slider at 47. Caught in a browser, not in
+the unit-level check — the server-side numbers looked right either way.
+
+Verified in a real browser end to end: AGC on `47 (AGC)`/47, AGC off
+`47`/47, manual drag `35`/35, AGC back on `45 (AGC)`/45 — label and
+slider agree at every step, and the number tracks the hardware rather
+than our memory of it.
+
 ## v0.17 — AF AGC, so audio level stops tracking signal strength
 
 Reported after the v0.16 bench test: audio too quiet with the PC volume

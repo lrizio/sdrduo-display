@@ -5,6 +5,7 @@
     freqHz: 14200000,
     mode: "USB",
     grdb: 40,
+    grdbActual: 40,
     lnaState: 4,
     agc: true,
     overload: false,
@@ -168,6 +169,7 @@
     state.freqHz = msg.freqHz;
     state.mode = msg.mode;
     state.grdb = msg.grdb;
+    state.grdbActual = msg.grdbActual != null ? msg.grdbActual : msg.grdb;
     state.lnaState = msg.lnaState;
     state.agc = msg.agc;
     state.overload = msg.overload;
@@ -181,8 +183,16 @@
     updateModeButtons();
     updateBandButtons();
     if (document.activeElement !== grdbSlider) {
-      grdbSlider.value = state.grdb;
-      grdbVal.textContent = state.grdb;
+      // Always show what the tuner is actually running, never what we
+      // last commanded. Those differ whenever the AGC is on (it drives
+      // gRdB itself), and they stay differing after AGC is switched off,
+      // because switching it off leaves the gain wherever the AGC last
+      // put it rather than snapping back to the commanded value. The
+      // "(AGC)" marker says who is driving the number, not which number
+      // to show. Skipped while the slider has focus so this can't fight
+      // a drag in progress.
+      grdbSlider.value = state.grdbActual;
+      grdbVal.textContent = state.agc ? state.grdbActual + " (AGC)" : state.grdbActual;
     }
     if (document.activeElement !== lnaSlider) {
       lnaSlider.value = state.lnaState;

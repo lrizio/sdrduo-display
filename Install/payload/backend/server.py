@@ -97,7 +97,8 @@ def current_state() -> dict:
         "type": "state",
         "freqHz": receiver.frequency_hz,
         "mode": demodulator.mode,
-        "grdb": receiver.grdb,
+        "grdb": receiver.grdb,              # what we last commanded
+        "grdbActual": receiver.current_grdb,  # what the tuner is really running
         "lnaState": receiver.lna_state,
         "agc": receiver.agc_enabled,
         "overload": receiver.overload,
