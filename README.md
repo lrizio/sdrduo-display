@@ -34,7 +34,7 @@ venv\Scripts\activate
 python run.py
 ```
 
-## Current scope (v0.15)
+## Current scope (v0.18)
 
 - Single active VFO on Tuner A (the SMA port with the AM/HF option), fixed
   2 Msps / zero-IF acquisition -- gives a 2 MHz-wide panadapter around the
@@ -51,6 +51,10 @@ python run.py
   preview) plus 8 memory preset slots (M1-M8), saved/recalled client-side.
 - Manual gain reduction / LNA state sliders, or hardware AGC -- with
   automatic GR/LNA re-sync on HF/VHF/UHF band crossings when AGC is on.
+  The gain readout shows what the tuner is actually running (marked
+  "(AGC)" while the AGC is driving it), not the last value commanded.
+- AF AGC on every mode's audio, so the level stays roughly constant
+  instead of tracking signal strength.
 - Squelch (enable + threshold), S-meter (ham S-unit convention) and
   ADC-overload badge.
 - Exit button in the UI for a clean shutdown (releases the SDRplay API
