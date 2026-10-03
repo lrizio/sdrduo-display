@@ -35,7 +35,11 @@ def _wait_and_open_browser() -> None:
         # shows *something* rather than nothing; the real error is on the
         # console, same as if this wait weren't here at all.
         pass
-    webbrowser.open(URL)
+    # open_new() (not open()) so this pops a fresh, focused window instead
+    # of silently landing as a background tab in whatever browser window
+    # already happens to be open -- easy to miss and looked like "the
+    # script isn't doing anything" when it actually was.
+    webbrowser.open_new(URL)
 
 
 if __name__ == "__main__":
