@@ -2,6 +2,13 @@
 
 All notable changes to SDRduo Display are documented here.
 
+## v0.19 — version number shown in the header
+
+The top bar and the browser tab now show the version (`v0.19`), so it is
+clear which build is running. The number is written in `static/index.html`
+(two places); bump it there, in `README.md` and in `Install/build.ps1` with
+each release. No receiver changes.
+
 ## v0.18 — gain readout showed what we asked for, not what the tuner is doing
 
 Found while investigating whether the hardware AGC was hurting SNR (it

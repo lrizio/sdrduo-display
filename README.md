@@ -34,7 +34,7 @@ venv\Scripts\activate
 python run.py
 ```
 
-## Current scope (v0.18)
+## Current scope (v0.19)
 
 - Single active VFO on Tuner A (the SMA port with the AM/HF option), fixed
   2 Msps / zero-IF acquisition -- gives a 2 MHz-wide panadapter around the

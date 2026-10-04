@@ -42,7 +42,7 @@ Import-Module ps2exe
 $exePath = Join-Path $installDir "setup.exe"
 Invoke-ps2exe -inputFile $standalonePath -outputFile $exePath `
     -title "SDRduo Display Setup" -description "Installs SDRduo Display" `
-    -company "VK3EI" -version "0.18.0.0" -requireAdmin:$false -noConsole:$false
+    -company "VK3EI" -version "0.19.0.0" -requireAdmin:$false -noConsole:$false
 
 if (Test-Path $exePath) {
     $size = (Get-Item $exePath).Length
