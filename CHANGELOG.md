@@ -2,6 +2,15 @@
 
 All notable changes to SDRduo Display are documented here.
 
+## v0.20 — checks GitHub for a newer release
+
+When the page opens, the browser makes one small request to GitHub's
+"latest release" record for this project (after about 4 seconds) and shows
+an amber **UPDATE vX.Y AVAILABLE** badge in the top bar if a newer release
+exists. Nothing is downloaded or installed; it stays silent when offline.
+The **check for updates** tick box in the top bar turns it off (remembered
+in the browser). No receiver changes.
+
 ## v0.19 — version number shown in the header
 
 The top bar and the browser tab now show the version (`v0.19`), so it is

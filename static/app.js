@@ -902,6 +902,47 @@
     nextStartTime += buf.duration;
   }
 
+  // ---------------- update check ----------------
+  // One small GET of the GitHub "latest release" record from this browser,
+  // shortly after the page opens. Nothing is downloaded or installed; it
+  // fails silently offline. The tick box in the header turns it off.
+  (function updateCheck() {
+    const KEY = "sdrduo.check_updates";
+    const chk = document.getElementById("upd-chk");
+    const link = document.getElementById("update-link");
+    if (!chk || !link) return;
+    const verNums = (t) => (String(t).match(/\d+/g) || []).slice(0, 4).map(Number);
+    const newer = (a, b) => {
+      const x = verNums(a), y = verNums(b);
+      for (let i = 0; i < Math.max(x.length, y.length); i++) {
+        const d = (x[i] || 0) - (y[i] || 0);
+        if (d) return d > 0;
+      }
+      return false;
+    };
+    let enabled = true;
+    try { enabled = localStorage.getItem(KEY) !== "0"; } catch (e) { /* storage blocked */ }
+    chk.checked = enabled;
+    chk.addEventListener("change", () => {
+      try { localStorage.setItem(KEY, chk.checked ? "1" : "0"); } catch (e) { /* ignore */ }
+      if (!chk.checked) link.classList.add("hidden");
+    });
+    if (!enabled) return;
+    const current = (document.title.match(/v(\d[\d.]*)/) || [])[1] || "0";
+    setTimeout(() => {
+      fetch("https://api.github.com/repos/lrizio/SDRduoDisplay/releases/latest",
+            { headers: { Accept: "application/vnd.github+json" } })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((rec) => {
+          if (!rec || rec.draft || rec.prerelease || !newer(rec.tag_name || "", current)) return;
+          link.textContent = "UPDATE " + String(rec.tag_name).replace(/^v?/i, "v") + " AVAILABLE";
+          if (rec.html_url) link.href = rec.html_url;
+          link.classList.remove("hidden");
+        })
+        .catch(() => {});
+    }, 4000);
+  })();
+
   // ---------------- boot ----------------
   buildSpanButtons();
   buildStepButtons();

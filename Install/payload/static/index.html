@@ -3,12 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>SDRduo Display v0.19</title>
+<title>SDRduo Display v0.20</title>
 <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
 <header id="topbar">
-  <div id="brand">SDRduo Display <small style="font-size:0.65em; opacity:0.65; font-weight:normal;">v0.19</small> <span id="conn-dot" class="dot dot-off" title="connection"></span></div>
+  <div id="brand">SDRduo Display <small style="font-size:0.65em; opacity:0.65; font-weight:normal;">v0.20</small> <span id="conn-dot" class="dot dot-off" title="connection"></span>
+    <a id="update-link" class="badge hidden" href="https://github.com/lrizio/SDRduoDisplay/releases/latest" target="_blank" rel="noopener" title="A newer SDRduo Display is on GitHub. Click to open the download page."></a></div>
 
   <div id="freq-block">
     <input id="freq-input" type="text" inputmode="none" value="14.200.000" readonly />
@@ -25,6 +26,7 @@
     <div id="sql-badge" class="badge badge-sql hidden">SQUELCHED</div>
   </div>
 
+  <label id="upd-opt" title="When this page opens, look on GitHub for a newer release (one small request from this browser; nothing is downloaded)."><input id="upd-chk" type="checkbox" checked /> check for updates</label>
   <button id="exit-btn" title="Stop the SDRduo Display server (releases the RSPduo cleanly)">Exit</button>
 </header>
 
